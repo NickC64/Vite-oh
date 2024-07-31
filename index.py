@@ -107,8 +107,6 @@ async def proposal_timer(guild_id, proposal_id, name):
     del proposals[proposal_id]
 
 # Load token from environment variable
-token = os.getenv('DISCORD_TOKEN')
-if not token:
-    raise ValueError("No token found. Make sure to set the DISCORD_TOKEN environment variable.")
+token = os.environ.get("DISCORD_TOKEN", "Specified environment variable is not set.")
 
 bot.run(token)
