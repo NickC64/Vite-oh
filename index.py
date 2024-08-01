@@ -1,6 +1,9 @@
 # This example requires the 'message_content' intent.
 
 import ssl
+from flask import Flask
+app = Flask(__name__)
+
 
 
 ssl._create_default_https_context = ssl._create_unverified_context
@@ -106,7 +109,18 @@ async def proposal_timer(guild_id, proposal_id, name):
             await output_channel.send(f"The proposal for {name} has been vetoed.")
     del proposals[proposal_id]
 
-# Load token from environment variable
-token = os.environ.get("DISCORD_TOKEN", "Specified environment variable is not set.")
+if __name__ == "__main__":
+    # Load token from environment variable
+    token = os.environ.get("DISCORD_TOKEN", "Specified environment variable is not set.")
 
-bot.run(token)
+    import threading
+
+    def run_bot():
+        bot.run(token)
+
+    bot_thread = threading.Thread(target=run_bot)
+    bot_thread.start()
+
+    # Run the Flask app
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
