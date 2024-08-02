@@ -19,10 +19,11 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 SERVER_ID = 977606746317144154
 OUTPUT_CHANNEL_NAME = "fedex"
-TIMEOUT_SECONDS = 172800;
+TIMEOUT_SECONDS = 172800
 
 intents = discord.Intents.default()
 intents.guilds = True
+intents.message_content = True
 
 class MyBot(commands.Bot):
     def __init__(self):
@@ -107,7 +108,8 @@ async def new(interaction: discord.Interaction, name: str):
 
     output_channel = await get_output_channel()
     if output_channel:
-        await output_channel.send(response_message, view=ProposalView(proposal_id))
+        proposal_message = await output_channel.send(response_message, view=ProposalView(proposal_id))
+        proposals[proposal_id]['message_id'] = proposal_message.id  # Store the message ID
     else:
         await interaction.followup.send(f"Warning: Couldn't find the '{OUTPUT_CHANNEL_NAME}' channel to announce the proposal.", ephemeral=True)
 
@@ -119,11 +121,17 @@ async def veto_proposal(interaction: discord.Interaction, proposal_id: str):
 
     proposal['timer'].cancel()
     await notify_subscribers(proposal, "vetoed")
-    del proposals[proposal_id.lower()]
 
     output_channel = await get_output_channel()
     if output_channel:
-        await output_channel.send(f"The proposal for {proposal['name']} has been vetoed.")
+        if 'message_id' in proposal:
+            try:
+                message = await output_channel.fetch_message(proposal['message_id'])
+                await message.edit(content=f"The proposal for {proposal['name']} has been vetoed.", view=None)
+            except discord.NotFound:
+                await output_channel.send(f"The proposal for {proposal['name']} has been vetoed.")
+        else:
+            await output_channel.send(f"The proposal for {proposal['name']} has been vetoed.")
     else:
         await interaction.followup.send(f"Error: Couldn't find the '{OUTPUT_CHANNEL_NAME}' channel.", ephemeral=True)
 
@@ -140,7 +148,14 @@ async def proposal_timer(proposal_id, name):
         await notify_subscribers(proposal, "passed")
         output_channel = await get_output_channel()
         if output_channel:
-            await output_channel.send(f"The proposal for {name} has passed.")
+            if 'message_id' in proposal:
+                try:
+                    message = await output_channel.fetch_message(proposal['message_id'])
+                    await message.edit(content=f"The proposal for {name} has passed.", view=None)
+                except discord.NotFound:
+                    await output_channel.send(f"The proposal for {name} has passed.")
+            else:
+                await output_channel.send(f"The proposal for {name} has passed.")
         del proposals[proposal_id.lower()]
 
 # Load token from environment variable
