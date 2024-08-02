@@ -5,6 +5,15 @@ from discord.ext import commands
 import asyncio
 import os
 import time
+from flask import Flask
+from dotenv import load_dotenv
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger('discord')
+logger.setLevel(logging.DEBUG)
+
+app = Flask(__name__)
 
 ssl._create_default_https_context = ssl._create_unverified_context
 
@@ -28,7 +37,7 @@ OUTPUT_CHANNEL_NAME = "fedex"
 
 @bot.event
 async def on_ready():
-    print(f'Logged in as {bot.user.name}')
+    logger.info(f'Logged in as {bot.user.name}')
 
 async def get_output_channel():
     guild = bot.get_guild(SERVER_ID)
@@ -119,12 +128,13 @@ async def veto_proposal(interaction: discord.Interaction, proposal_id: str):
 
 async def notify_subscribers(proposal, status):
     for user_id in proposal['subscribers']:
-        user = bot.get_user(user_id)
+        user = await bot.fetch_user(user_id)
         if user:
             await user.send(f"The proposal for {proposal['name']} has been {status}.")
 
 async def proposal_timer(proposal_id, name):
-    await asyncio.sleep(172800)  # 48 hours
+    # await asyncio.sleep(172800)  # 48 hours
+    await asyncio.sleep(10)
     proposal = proposals.get(proposal_id.lower())
     if proposal:
         await notify_subscribers(proposal, "passed")
@@ -134,6 +144,27 @@ async def proposal_timer(proposal_id, name):
         del proposals[proposal_id.lower()]
 
 # Load token from environment variable
-token = os.environ.get("DISCORD_TOKEN", "Specified environment variable is not set.")
+if __name__ == "__main__":
+    # Load token from environment variable
 
-bot.run(token)
+    def is_running_on_gcp():
+        return os.environ.get('GAE_ENV', '').startswith('standard')
+
+    token = '';
+    if is_running_on_gcp():
+        token = os.environ.get("DISCORD_TOKEN", "Specified environment variable is not set.")
+
+    else:
+        load_dotenv()
+        token = os.getenv("DISCORD_TOKEN")
+        port = int(os.getenv("PORT"))
+
+    import threading
+
+    def run_bot():
+        bot.run(token)
+
+    bot_thread = threading.Thread(target=run_bot)
+    bot_thread.start()
+
+    app.run(host='0.0.0.0', port=8080)
