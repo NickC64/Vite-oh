@@ -153,11 +153,9 @@ if __name__ == "__main__":
     token = '';
     if is_running_on_gcp():
         token = os.environ.get("DISCORD_TOKEN", "Specified environment variable is not set.")
-
     else:
         load_dotenv()
         token = os.getenv("DISCORD_TOKEN")
-        port = int(os.getenv("PORT"))
 
     import threading
 
