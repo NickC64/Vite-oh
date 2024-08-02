@@ -18,9 +18,10 @@ app = Flask(__name__)
 ssl._create_default_https_context = ssl._create_unverified_context
 
 SERVER_ID = 977606746317144154
+OUTPUT_CHANNEL_NAME = "fedex"
+TIMEOUT_SECONDS = 172800;
 
 intents = discord.Intents.default()
-intents.message_content = True
 intents.guilds = True
 
 class MyBot(commands.Bot):
@@ -33,7 +34,7 @@ class MyBot(commands.Bot):
 bot = MyBot()
 
 proposals = {}
-OUTPUT_CHANNEL_NAME = "fedex"
+
 
 @bot.event
 async def on_ready():
@@ -93,7 +94,7 @@ async def new(interaction: discord.Interaction, name: str):
         await interaction.response.send_message(f"A proposal for '{name}' already exists.", ephemeral=True)
         return
 
-    deadline = int(time.time()) + 172800  # 48 hours from now
+    deadline = int(time.time()) + TIMEOUT_SECONDS
     proposals[proposal_id] = {
         'name': name,
         'subscribers': [],
@@ -133,8 +134,7 @@ async def notify_subscribers(proposal, status):
             await user.send(f"The proposal for {proposal['name']} has been {status}.")
 
 async def proposal_timer(proposal_id, name):
-    # await asyncio.sleep(172800)  # 48 hours
-    await asyncio.sleep(10)
+    await asyncio.sleep(TIMEOUT_SECONDS)
     proposal = proposals.get(proposal_id.lower())
     if proposal:
         await notify_subscribers(proposal, "passed")
@@ -150,17 +150,20 @@ if __name__ == "__main__":
     def is_running_on_gcp():
         return os.environ.get('GAE_ENV', '').startswith('standard')
 
-    token = '';
+    TOKEN = '';
     if is_running_on_gcp():
-        token = os.environ.get("DISCORD_TOKEN", "Specified environment variable is not set.")
+        TOKEN = os.environ.get("DISCORD_TOKEN", "Specified environment variable is not set.")
     else:
         load_dotenv()
-        token = os.getenv("DISCORD_TOKEN")
+        TOKEN = os.getenv("DISCORD_TOKEN")
+        OUTPUT_CHANNEL_NAME = os.getenv("OUTPUT_CHANNEL_NAME")
+        SERVER_ID = int(os.getenv("SERVER_ID"))
+        TIMEOUT_SECONDS = int(os.getenv("TIMEOUT_SECONDS"))
 
     import threading
 
     def run_bot():
-        bot.run(token)
+        bot.run(TOKEN)
 
     bot_thread = threading.Thread(target=run_bot)
     bot_thread.start()
