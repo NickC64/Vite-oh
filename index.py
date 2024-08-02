@@ -158,12 +158,10 @@ async def proposal_timer(proposal_id, name):
                 await output_channel.send(f"The proposal for {name} has passed.")
         del proposals[proposal_id.lower()]
 
-# Load token from environment variable
 if __name__ == "__main__":
-    # Load token from environment variable
 
     def is_running_on_gcp():
-        return os.environ.get('GAE_ENV', '').startswith('standard')
+        return not bool(os.getenv("DISCORD_TOKEN"))
 
     TOKEN = '';
     if is_running_on_gcp():
