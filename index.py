@@ -160,18 +160,11 @@ async def proposal_timer(proposal_id, name):
 
 if __name__ == "__main__":
 
-    def is_running_on_gcp():
-        return not bool(os.getenv("DISCORD_TOKEN"))
-
-    TOKEN = '';
-    if is_running_on_gcp():
-        TOKEN = os.environ.get("DISCORD_TOKEN", "Specified environment variable is not set.")
-    else:
-        load_dotenv()
-        TOKEN = os.getenv("DISCORD_TOKEN")
-        OUTPUT_CHANNEL_NAME = os.getenv("OUTPUT_CHANNEL_NAME")
-        SERVER_ID = int(os.getenv("SERVER_ID"))
-        TIMEOUT_SECONDS = int(os.getenv("TIMEOUT_SECONDS"))
+    load_dotenv()
+    TOKEN = os.getenv("DISCORD_TOKEN")
+    OUTPUT_CHANNEL_NAME = os.getenv("OUTPUT_CHANNEL_NAME")
+    SERVER_ID = int(os.getenv("SERVER_ID"))
+    TIMEOUT_SECONDS = int(os.getenv("TIMEOUT_SECONDS"))
 
     import threading
 
