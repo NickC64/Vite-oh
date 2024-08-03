@@ -164,30 +164,24 @@ async def veto_proposal(interaction: discord.Interaction, proposal_id: str):
 
 @bot.tree.command(name="help", description="Get information about available commands")
 async def help_command(interaction: discord.Interaction):
-    help_text = """
-**Available Commands:**
+    try:
+        with open('README.md', 'r') as file:
+            content = file.read()
 
-1. `/new <name>` - Propose a new member
-   Usage: `/new John Doe`
-   Description: Creates a new member proposal that will pass after 48 hours unless vetoed.
+        help_text = content.split('# Bot Commands', 1)[-1].strip()
 
-2. `/sub` - Subscribe to new proposal notifications
-   Usage: `/sub`
-   Description: You'll receive a DM whenever a new proposal is created.
-
-3. `/unsub` - Unsubscribe from new proposal notifications
-   Usage: `/unsub`
-   Description: Stop receiving DMs about new proposals.
-
-4. `/help` - Display this help message
-   Usage: `/help`
-   Description: Shows information about all available commands.
-
-**Additional Features:**
-- Use the "Veto" button on a proposal message to veto it.
-- Use the "Subscribe" button on a proposal message to receive updates about that specific proposal.
-"""
-    await interaction.response.send_message(help_text, ephemeral=True)
+        # Discord 2000-word limit (iirc)
+        if len(help_text) > 2000:
+            chunks = [help_text[i:i+2000] for i in range(0, len(help_text), 2000)]
+            for chunk in chunks:
+                await interaction.followup.send(chunk)
+            await interaction.response.send_message("Help information sent in multiple messages due to length.", ephemeral=True)
+        else:
+            await interaction.response.send_message(help_text, ephemeral=True)
+    except FileNotFoundError:
+        await interaction.response.send_message("Error: README.md file not found.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"An error occurred while reading the help information: {str(e)}", ephemeral=True)
 
 async def notify_subscribers(proposal, status):
     for user_id in proposal['subscribers']:
