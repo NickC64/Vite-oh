@@ -34,6 +34,7 @@ class MyBot(commands.Bot):
 
 bot = MyBot()
 
+subscribed_users = set()
 proposals = {}
 
 
@@ -87,6 +88,23 @@ class ProposalView(discord.ui.View):
         else:
             await interaction.response.send_message("You are already subscribed to this proposal.", ephemeral=True)
 
+
+@bot.tree.command(name="sub", description="Subscribe to new proposal notifications")
+async def sub(interaction: discord.Interaction):
+    if interaction.user.id in subscribed_users:
+        await interaction.response.send_message("You are already subscribed to new proposal notifications.", ephemeral=True)
+    else:
+        subscribed_users.add(interaction.user.id)
+        await interaction.response.send_message("You have subscribed to new proposal notifications.", ephemeral=True)
+
+@bot.tree.command(name="unsub", description="Unsubscribe from new proposal notifications")
+async def unsub(interaction: discord.Interaction):
+    if interaction.user.id not in subscribed_users:
+        await interaction.response.send_message("You are not currently subscribed to new proposal notifications.", ephemeral=True)
+    else:
+        subscribed_users.discard(interaction.user.id)
+        await interaction.response.send_message("You have unsubscribed from new proposal notifications.", ephemeral=True)
+
 @bot.tree.command(name="new", description="Propose a new member")
 @app_commands.describe(name="Name of the proposed member")
 async def new(interaction: discord.Interaction, name: str):
@@ -110,6 +128,13 @@ async def new(interaction: discord.Interaction, name: str):
     if output_channel:
         proposal_message = await output_channel.send(response_message, view=ProposalView(proposal_id))
         proposals[proposal_id]['message_id'] = proposal_message.id  # Store the message ID
+
+        # Notify subscribed users
+        for user_id in subscribed_users:
+            user = await bot.fetch_user(user_id)
+            if user:
+                message_link = f"https://discord.com/channels/{SERVER_ID}/{output_channel.id}/{proposal_message.id}"
+                await user.send(f"A new proposal for {name} has been created. View it here: {message_link}")
     else:
         await interaction.followup.send(f"Warning: Couldn't find the '{OUTPUT_CHANNEL_NAME}' channel to announce the proposal.", ephemeral=True)
 
