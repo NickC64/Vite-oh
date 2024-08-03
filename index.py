@@ -13,7 +13,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('discord')
 logger.setLevel(logging.DEBUG)
 
-app = Flask(__name__)
+def create_app():
+    app = Flask(__name__)
+    return app
 
 ssl._create_default_https_context = ssl._create_unverified_context
 
@@ -160,6 +162,33 @@ async def veto_proposal(interaction: discord.Interaction, proposal_id: str):
     else:
         await interaction.followup.send(f"Error: Couldn't find the '{OUTPUT_CHANNEL_NAME}' channel.", ephemeral=True)
 
+@bot.tree.command(name="help", description="Get information about available commands")
+async def help_command(interaction: discord.Interaction):
+    help_text = """
+**Available Commands:**
+
+1. `/new <name>` - Propose a new member
+   Usage: `/new John Doe`
+   Description: Creates a new member proposal that will pass after 48 hours unless vetoed.
+
+2. `/sub` - Subscribe to new proposal notifications
+   Usage: `/sub`
+   Description: You'll receive a DM whenever a new proposal is created.
+
+3. `/unsub` - Unsubscribe from new proposal notifications
+   Usage: `/unsub`
+   Description: Stop receiving DMs about new proposals.
+
+4. `/help` - Display this help message
+   Usage: `/help`
+   Description: Shows information about all available commands.
+
+**Additional Features:**
+- Use the "Veto" button on a proposal message to veto it.
+- Use the "Subscribe" button on a proposal message to receive updates about that specific proposal.
+"""
+    await interaction.response.send_message(help_text, ephemeral=True)
+
 async def notify_subscribers(proposal, status):
     for user_id in proposal['subscribers']:
         user = await bot.fetch_user(user_id)
@@ -183,20 +212,24 @@ async def proposal_timer(proposal_id, name):
                 await output_channel.send(f"The proposal for {name} has passed.")
         del proposals[proposal_id.lower()]
 
-if __name__ == "__main__":
 
+def setup_bot():
+    import threading
     load_dotenv()
-    TOKEN = os.getenv("DISCORD_TOKEN")
+    token = os.getenv("DISCORD_TOKEN")
+    global OUTPUT_CHANNEL_NAME
     OUTPUT_CHANNEL_NAME = os.getenv("OUTPUT_CHANNEL_NAME")
+    global SERVER_ID
     SERVER_ID = int(os.getenv("SERVER_ID"))
+    global TIMEOUT_SECONDS
     TIMEOUT_SECONDS = int(os.getenv("TIMEOUT_SECONDS"))
 
-    import threading
-
-    def run_bot():
-        bot.run(TOKEN)
-
-    bot_thread = threading.Thread(target=run_bot)
+    bot_thread = threading.Thread(target=lambda: bot.run(token))
     bot_thread.start()
 
-    app.run(host='0.0.0.0', port=8080)
+
+if __name__ == "__main__":
+    app = create_app()
+    setup_bot()
+    app.run(host='0.0.0.0', port=8080, debug=True)
+

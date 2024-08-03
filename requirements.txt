@@ -4,3 +4,4 @@ asyncio==3.4.3
 aiohttp==3.9.2
 flask==3.0.3
 discord~=2.3.2
+waitress~=3.0.0
