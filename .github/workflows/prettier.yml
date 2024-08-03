@@ -24,3 +24,5 @@ jobs:
       with:
         commit_message: Apply prettier formatting
         branch: ${{ github.head_ref }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.PAT }}
