@@ -586,7 +586,7 @@ async def delete_proposal(interaction: discord.Interaction, name: str):
 )
 async def help_command(interaction: discord.Interaction):
     try:
-        with open("README.md", "r") as file:
+        with open("cmds.md", "r") as file:
             content = file.read()
 
         help_text = content.split("# Bot Commands", 1)[-1].strip()
@@ -606,7 +606,7 @@ async def help_command(interaction: discord.Interaction):
             await interaction.response.send_message(help_text, ephemeral=True)
     except FileNotFoundError:
         await interaction.response.send_message(
-            "Error: README.md file not found.", ephemeral=True
+            "Error: cmds.md file not found.", ephemeral=True
         )
     except Exception as e:
         await interaction.response.send_message(
