@@ -5,3 +5,5 @@ aiohttp==3.9.4
 flask==3.0.3
 discord~=2.3.2
 waitress~=3.0.0
+SQLAlchemy==2.0.31
+cryptography==43.0.0
