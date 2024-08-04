@@ -530,10 +530,7 @@ async def view_proposals(interaction: discord.Interaction):
         return
 
     proposal_list = "\n".join(
-        [
-            f"{proposal['name']} (ID: {proposal_id})"
-            for proposal_id, proposal in proposals.items()
-        ]
+        [f"{proposal['name']}" for proposal_id, proposal in proposals.items()]
     )
     await interaction.response.send_message(
         f"Current proposals:\n{proposal_list}", ephemeral=True
