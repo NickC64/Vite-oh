@@ -457,8 +457,25 @@ async def new(interaction: discord.Interaction, name: str):
             )
     except Exception as e:
         logger.error(f"Error creating new proposal: {str(e)}")
+        if proposal_id in proposals and "timer" in proposals[proposal_id]:
+            proposals[proposal_id]["timer"].cancel()
+
+        proposals.pop(proposal_id, None)
+
+        try:
+            db_proposal = (
+                session.query(Proposal).filter_by(id=proposal_id).first()
+            )
+            if db_proposal:
+                session.delete(db_proposal)
+                session.commit()
+        except Exception as db_error:
+            logger.error(
+                f"Error deleting proposal from database: {str(db_error)}"
+            )
+
         await interaction.followup.send(
-            "An error occurred while creating the proposal. If the proposal was still posted, veto it and create another one. If it still persists, make a bug report",
+            "An error occurred while creating the proposal. The proposal has been cancelled.",
             ephemeral=True,
         )
     finally:
