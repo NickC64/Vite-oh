@@ -13,7 +13,33 @@ from datetime import datetime
 import time
 import atexit
 import calendar
-from sqlalchemy.orm import joinedload
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
+import asyncio
+from contextlib import asynccontextmanager
+
+# Create async engine
+engine = create_async_engine(
+    "postgresql+asyncpg://user:password@localhost/dbname",
+    echo=True,
+)
+
+# Create async session factory
+async_session = sessionmaker(
+    engine, class_=AsyncSession, expire_on_commit=False
+)
+
+@asynccontextmanager
+async def get_session():
+    """Async context manager for database sessions"""
+    async with async_session() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception as e:
+            await session.rollback()
+            raise   
+        await session.close()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("discord")
@@ -390,71 +416,73 @@ async def new(interaction: discord.Interaction, name: str):
 
     deadline = int(time.time()) + TIMEOUT_SECONDS
 
-    session = Session()
+    await interaction.response.defer(ephemeral=True)
+
     try:
-        # Check if proposal already exists in database
-        existing_proposal = (
-            session.query(Proposal).filter_by(id=proposal_id).first()
-        )
-        if existing_proposal:
-            await interaction.response.send_message(
-                f"A proposal for '{name}' already exists.", ephemeral=True
-            )
-            return
-
-        new_proposal = Proposal(
-            id=proposal_id,
-            name=name,
-            deadline=deadline,
-            created_at=datetime.utcnow(),
-        )
-        session.add(new_proposal)
-        session.commit()
-
-        remaining_time = TIMEOUT_SECONDS
-
-        proposals[proposal_id] = {
-            "name": name,
-            "subscribers": [],
-            "timer": asyncio.create_task(
-                proposal_timer(proposal_id, name, remaining_time)
-            ),
-        }
-
-        response_message = f"A member proposal for {name} was added, set to pass <t:{deadline}:R>"
-
-        await interaction.response.send_message(
-            "Proposal created successfully.", ephemeral=True
-        )
-
-        output_channel = await get_output_channel()
-        if output_channel:
-            view = ProposalView(proposal_id)
-            proposal_message = await output_channel.send(
-                response_message, view=view
-            )
-            bot.add_view(view)
-            proposals[proposal_id]["message_id"] = proposal_message.id
-
-            db_proposal = (
+        with get_session() as session:
+            # Check if proposal already exists in database
+            existing_proposal = (
                 session.query(Proposal).filter_by(id=proposal_id).first()
             )
-            if db_proposal:
-                db_proposal.message_id = proposal_message.id
-                session.commit()
+            if existing_proposal:
+                await interaction.response.send_message(
+                    f"A proposal for '{name}' already exists.", ephemeral=True
+                )
+                return
 
-            for user_id in subscribed_users:
-                user = await bot.fetch_user(user_id)
-                if user:
-                    message_link = f"https://discord.com/channels/{SERVER_ID}/{output_channel.id}/{proposal_message.id}"
-                    await user.send(
-                        f"A new proposal for {name} has been created. View it here: {message_link}"
-                    )
-        else:
-            await interaction.followup.send(
-                f"Warning: Couldn't find the '{OUTPUT_CHANNEL_NAME}' channel to announce the proposal.",
-                ephemeral=True,
+            new_proposal = Proposal(
+                id=proposal_id,
+                name=name,
+                deadline=deadline,
+                created_at=datetime.utcnow(),
             )
+            session.add(new_proposal)
+            session.commit()
+
+            remaining_time = TIMEOUT_SECONDS
+
+            proposals[proposal_id] = {
+                "name": name,
+                "subscribers": [],
+                "timer": asyncio.create_task(
+                    proposal_timer(proposal_id, name, remaining_time)
+                ),
+            }
+
+            response_message = f"A member proposal for {name} was added, set to pass <t:{deadline}:R>"
+
+            await interaction.response.send_message(
+                "Proposal created successfully.", ephemeral=True
+            )
+
+            output_channel = await get_output_channel()
+            if output_channel:
+                view = ProposalView(proposal_id)
+                proposal_message = await output_channel.send(
+                    response_message, view=view
+                )
+                bot.add_view(view)
+                proposals[proposal_id]["message_id"] = proposal_message.id
+
+                db_proposal = (
+                    session.query(Proposal).filter_by(id=proposal_id).first()
+                )
+                if db_proposal:
+                    db_proposal.message_id = proposal_message.id
+                    session.flush()
+
+                for user_id in subscribed_users:
+                    user = await bot.fetch_user(user_id)
+                    if user:
+                        message_link = f"https://discord.com/channels/{SERVER_ID}/{output_channel.id}/{proposal_message.id}"
+                        await user.send(
+                            f"A new proposal for {name} has been created. View it here: {message_link}"
+                        )
+            else:
+                await interaction.followup.send(
+                    f"Warning: Couldn't find the '{OUTPUT_CHANNEL_NAME}' channel to announce the proposal.",
+                    ephemeral=True,
+                )
     except Exception as e:
         logger.error(f"Error creating new proposal: {str(e)}")
         if proposal_id in proposals and "timer" in proposals[proposal_id]:
@@ -645,42 +673,33 @@ async def notify_subscribers(proposal, status):
             await user.send(f"The proposal for {name} has been {status}.")
 
 
-async def proposal_timer(proposal_id, name, remaining_time):
-    await asyncio.sleep(remaining_time)
-    global proposals
-    proposal = proposals.get(proposal_id.lower())
-    if proposal:
-        await notify_subscribers(proposal, "passed")
-        output_channel = await get_output_channel()
-        if output_channel:
-            if "message_id" in proposal:
-                try:
-                    message = await output_channel.fetch_message(
-                        proposal["message_id"]
-                    )
-                    await message.edit(
-                        content=f"The proposal for {name} has passed.",
-                        view=None,
-                    )
-                except discord.NotFound:
-                    await output_channel.send(
-                        f"The proposal for {name} has passed."
-                    )
-            else:
-                await output_channel.send(
-                    f"The proposal for {name} has passed."
-                )
-
-        session = Session()
-        db_proposal = (
-            session.query(Proposal).filter_by(id=proposal_id.lower()).first()
-        )
-        if db_proposal:
-            session.delete(db_proposal)
-            session.commit()
-        session.close()
-
-        proposals.pop(proposal_id.lower(), None)
+async def proposal_timer(proposal_id: str, name: str, remaining_time: int):
+    try:
+        await asyncio.sleep(remaining_time)
+        
+        async with get_session() as session:
+            db_proposal = await session.get(Proposal, proposal_id)
+            if db_proposal:
+                await notify_subscribers(db_proposal, "passed")
+                await session.delete(db_proposal)
+                
+                output_channel = await get_output_channel()
+                if output_channel and db_proposal.message_id:
+                    try:
+                        message = await output_channel.fetch_message(db_proposal.message_id)
+                        await message.edit(
+                            content=f"The proposal for {name} has passed.",
+                            view=None
+                        )
+                    except discord.NotFound:
+                        await output_channel.send(f"The proposal for {name} has passed.")
+                
+                proposals.pop(proposal_id, None)
+                
+    except asyncio.CancelledError:
+        logger.info(f"Timer cancelled for proposal {proposal_id}")
+    except Exception as e:
+        logger.error(f"Error in proposal timer for {proposal_id}: {str(e)}")
 
 
 def setup_bot():
