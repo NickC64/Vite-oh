@@ -155,6 +155,7 @@ resource "google_cloud_run_v2_service" "worker" {
           cpu    = "1"
           memory = "512Mi"
         }
+        cpu_idle = true
       }
       ports {
         container_port = 8080
@@ -248,6 +249,7 @@ resource "google_cloud_run_v2_service" "receiver" {
           cpu    = "1"
           memory = "256Mi"
         }
+        cpu_idle = true
       }
       ports {
         container_port = 8080
