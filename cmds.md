@@ -1,12 +1,14 @@
 # Bot Commands
 
-- `/new <name>` — Propose a new member. The proposal passes after 48 hours
-  unless anonymously vetoed.
+- `/new <title> [context]` — Create a general proposal using the server's
+  configured deadline.
 - `/sub` — Subscribe to notifications about new proposals.
 - `/unsub` — Stop notifications about new proposals.
 - `/view` — View active proposals and their deadlines.
 - `/help` — Display command help.
-- `/delete <name>` — Owner-only proposal deletion.
+- `/delete <proposal>` — Delete an autocompleted active proposal (Manage Server).
+- `/nudge <proposal> <user>` — Anonymously notify one member.
+- `/nudges [enabled]` — View or change your per-server nudge preference.
 
-Use **Veto** on a proposal message to veto anonymously. Use **Subscribe** to
-receive updates about that specific proposal.
+Use **Veto** to object anonymously, **Acknowledge** to record privately that you
+saw the proposal, and **Subscribe** to receive proposal updates.

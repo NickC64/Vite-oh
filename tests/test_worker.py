@@ -46,7 +46,8 @@ def command(
 ) -> dict[str, object]:
     command_options = options
     if command_options is None:
-        command_options = [{"name": "name", "value": value}] if value else []
+        option_name = "title" if name == "new" else "proposal"
+        command_options = [{"name": option_name, "value": value}] if value else []
     return {
         "id": interaction_id,
         "type": 2,
@@ -66,7 +67,7 @@ async def test_new_is_durable_scheduled_and_idempotent(
     processor, repository, tasks, discord = system
     await processor.process(command("new", value=" Alice "))
     proposal = next(iter(repository.proposals.values()))
-    assert proposal.display_name == "Alice"
+    assert proposal.title == "Alice"
     assert proposal.message_id == "999"
     assert proposal.task_scheduled
     assert len(tasks.deadlines) == 1
@@ -179,10 +180,11 @@ async def test_owner_delete_is_enforced(
 ) -> None:
     processor, repository, _, discord = system
     await processor.process(command("new", value="Alice"))
-    await processor.process(command("delete", interaction_id="2", value="Alice"))
+    proposal = next(iter(repository.proposals.values()))
+    await processor.process(command("delete", interaction_id="2", value=proposal.id))
     assert "Manage Server" in discord.responses[-1]
     await processor.process(
-        command("delete", interaction_id="3", user_id="owner", value="Alice")
+        command("delete", interaction_id="3", user_id="owner", value=proposal.id)
     )
     assert next(iter(repository.proposals.values())).status is ProposalStatus.DELETED
 
@@ -262,3 +264,205 @@ async def test_copied_component_cannot_cross_guild(
     )
     assert proposal.status is ProposalStatus.ACTIVE
     assert "another server" in discord.responses[-1]
+
+
+async def test_generalized_proposal_context_and_acknowledgement(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+) -> None:
+    processor, repository, _, discord = system
+    await processor.process(
+        command(
+            "new",
+            options=[
+                {"name": "title", "value": "Adopt quiet hours"},
+                {"name": "context", "value": "No pings after 10 PM."},
+            ],
+        )
+    )
+    proposal = next(iter(repository.proposals.values()))
+    assert proposal.title == "Adopt quiet hours"
+    assert proposal.context == "No pings after 10 PM."
+    payload = {
+        "id": "2",
+        "type": 3,
+        "token": "token",
+        "guild_id": "guild",
+        "member": {"user": {"id": "reviewer"}},
+        "data": {"custom_id": component_id("acknowledge", proposal.id)},
+    }
+    await processor.process(payload)
+    await processor.process(payload)
+    assert repository.proposals[proposal.id].acknowledgement_count == 1
+    assert repository.acknowledgements[proposal.id] == {"reviewer"}
+    assert discord.synced[-1].acknowledgement_count == 1
+    assert "already acknowledged" in discord.responses[-1]
+
+
+async def test_nudge_is_anonymous_deduplicated_and_respects_preference(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+) -> None:
+    processor, repository, _, discord = system
+    await processor.process(command("new", value="Review the bylaws"))
+    proposal = next(iter(repository.proposals.values()))
+    options = [
+        {"name": "proposal", "value": proposal.id},
+        {"name": "user", "value": "target"},
+    ]
+    await processor.process(command("nudge", interaction_id="2", options=options))
+    assert repository.nudges[proposal.id]["target"] == "delivered"
+    assert discord.dms[-1][0] == "target"
+    assert "Someone in" in discord.dms[-1][1]
+    assert "user" not in discord.dms[-1][1]
+    await processor.process(command("nudge", interaction_id="3", options=options))
+    assert "already been nudged" in discord.responses[-1]
+    assert len(discord.dms) == 1
+
+    await processor.process(
+        command(
+            "nudges",
+            interaction_id="4",
+            user_id="target",
+            options=[{"name": "enabled", "value": False}],
+        )
+    )
+    repository.next_id = "87654321-4321-4321-4321-cba987654321"
+    await processor.process(command("new", interaction_id="5", value="Second proposal"))
+    second = repository.proposals[repository.next_id]
+    await processor.process(
+        command(
+            "nudge",
+            interaction_id="6",
+            options=[
+                {"name": "proposal", "value": second.id},
+                {"name": "user", "value": "target"},
+            ],
+        )
+    )
+    assert "disabled" in discord.responses[-1]
+
+
+async def test_nudge_rejects_self_bots_forged_ids_and_limit(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+) -> None:
+    processor, repository, _, discord = system
+    await processor.process(command("new", value="Proposal"))
+    proposal = next(iter(repository.proposals.values()))
+    await processor.process(
+        command(
+            "nudge",
+            interaction_id="2",
+            options=[
+                {"name": "proposal", "value": proposal.id},
+                {"name": "user", "value": "user"},
+            ],
+        )
+    )
+    assert "yourself" in discord.responses[-1]
+    await processor.process(
+        command(
+            "nudge",
+            interaction_id="3",
+            options=[
+                {"name": "proposal", "value": proposal.id},
+                {"name": "user", "value": "bot"},
+            ],
+        )
+    )
+    assert "Bots" in discord.responses[-1]
+    await processor.process(
+        command(
+            "delete",
+            interaction_id="4",
+            user_id="owner",
+            value="not-a-uuid",
+        )
+    )
+    assert "valid active proposal" in discord.responses[-1]
+    repository.proposals[proposal.id] = replace(proposal, nudge_count=10)
+    await processor.process(
+        command(
+            "nudge",
+            interaction_id="5",
+            options=[
+                {"name": "proposal", "value": proposal.id},
+                {"name": "user", "value": "target"},
+            ],
+        )
+    )
+    assert "limit of 10" in discord.responses[-1]
+
+
+async def test_closed_dm_is_recorded_as_failed(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+) -> None:
+    processor, repository, _, discord = system
+    discord.dm_failures.add("target")
+    await processor.process(command("new", value="Proposal"))
+    proposal = next(iter(repository.proposals.values()))
+    await processor.process(
+        command(
+            "nudge",
+            interaction_id="2",
+            options=[
+                {"name": "proposal", "value": proposal.id},
+                {"name": "user", "value": "target"},
+            ],
+        )
+    )
+    assert repository.nudges[proposal.id]["target"] == "failed"
+    assert "could not deliver" in discord.responses[-1]
+
+
+async def test_acknowledgement_at_deadline_is_rejected(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    processor, repository, _, discord = system
+    await processor.process(command("new", value="Proposal"))
+    proposal = next(iter(repository.proposals.values()))
+    monkeypatch.setattr("viteoh.worker.utcnow", lambda: proposal.deadline_at)
+    await processor.process(
+        {
+            "id": "2",
+            "type": 3,
+            "token": "token",
+            "guild_id": "guild",
+            "member": {"user": {"id": "reviewer"}},
+            "data": {"custom_id": component_id("acknowledge", proposal.id)},
+        }
+    )
+    assert repository.proposals[proposal.id].acknowledgement_count == 0
+    assert "no longer active" in discord.responses[-1]
+
+
+async def test_announcement_rendering_converges_when_finalize_races_ack(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+) -> None:
+    processor, repository, _, discord = system
+    await processor.process(command("new", value="Proposal"))
+    proposal = next(iter(repository.proposals.values()))
+    original_sync = discord.sync_proposal_announcement
+    raced = False
+
+    async def racing_sync(current: object) -> None:
+        nonlocal raced
+        assert hasattr(current, "status")
+        if not raced:
+            raced = True
+            await repository.transition(
+                proposal.id, ProposalStatus.PASSED, proposal.deadline_at
+            )
+        await original_sync(current)  # type: ignore[arg-type]
+
+    discord.sync_proposal_announcement = racing_sync  # type: ignore[method-assign]
+    await processor.process(
+        {
+            "id": "2",
+            "type": 3,
+            "token": "token",
+            "guild_id": "guild",
+            "member": {"user": {"id": "reviewer"}},
+            "data": {"custom_id": component_id("acknowledge", proposal.id)},
+        }
+    )
+    assert discord.synced[-1].status is ProposalStatus.PASSED

@@ -13,20 +13,21 @@ from viteoh.domain import (
     CreateProposalResult,
     GuildConfig,
     Proposal,
+    ProposalActionResult,
     ProposalStatus,
     TransitionResult,
 )
 
 
-def normalize_name(value: str) -> str:
+def normalize_title(value: str) -> str:
     normalized = " ".join(unicodedata.normalize("NFKC", value).split()).casefold()
     if not normalized or len(normalized) > 100:
-        raise ValueError("Proposal names must contain 1 to 100 characters")
+        raise ValueError("Proposal titles must contain 1 to 100 characters")
     return normalized
 
 
-def reservation_id(guild_id: str, normalized_name: str) -> str:
-    return hashlib.sha256(f"{guild_id}\0{normalized_name}".encode()).hexdigest()
+def reservation_id(guild_id: str, normalized_title: str) -> str:
+    return hashlib.sha256(f"{guild_id}\0{normalized_title}".encode()).hexdigest()
 
 
 class Repository(Protocol):
@@ -48,8 +49,9 @@ class Repository(Protocol):
         guild_id: str,
         guild_name: str,
         output_channel_id: str,
-        display_name: str,
-        normalized_name: str,
+        title: str,
+        normalized_title: str,
+        context: str,
         created_at: datetime,
         deadline_at: datetime,
     ) -> CreateProposalResult: ...
@@ -74,6 +76,24 @@ class Repository(Protocol):
         status: ProposalStatus,
         now: datetime,
     ) -> TransitionResult: ...
+
+    async def acknowledge(
+        self, proposal_id: str, user_id: str, now: datetime
+    ) -> ProposalActionResult: ...
+
+    async def reserve_nudge(
+        self, proposal_id: str, target_user_id: str, now: datetime
+    ) -> ProposalActionResult: ...
+
+    async def mark_nudge_state(
+        self, proposal_id: str, target_user_id: str, state: str
+    ) -> None: ...
+
+    async def get_nudges_enabled(self, guild_id: str, user_id: str) -> bool: ...
+
+    async def set_nudges_enabled(
+        self, guild_id: str, user_id: str, enabled: bool
+    ) -> None: ...
 
     async def set_guild_subscription(
         self, guild_id: str, user_id: str, enabled: bool
@@ -140,13 +160,14 @@ class FirestoreRepository:
         guild_id: str,
         guild_name: str,
         output_channel_id: str,
-        display_name: str,
-        normalized_name: str,
+        title: str,
+        normalized_title: str,
+        context: str,
         created_at: datetime,
         deadline_at: datetime,
     ) -> CreateProposalResult:
         proposal_id = str(uuid.uuid4())
-        reserve_id = reservation_id(guild_id, normalized_name)
+        reserve_id = reservation_id(guild_id, normalized_title)
         proposal_ref = self.client.collection("proposals").document(proposal_id)
         reservation_ref = self.client.collection("active_names").document(reserve_id)
         interaction_ref = self.client.collection("interactions").document(
@@ -190,8 +211,9 @@ class FirestoreRepository:
                 "guild_id": guild_id,
                 "guild_name": guild_name,
                 "output_channel_id": output_channel_id,
-                "display_name": display_name,
-                "normalized_name": normalized_name,
+                "title": title,
+                "normalized_title": normalized_title,
+                "context": context,
                 "reservation_id": reserve_id,
                 "status": ProposalStatus.ACTIVE.value,
                 "created_at": created_at,
@@ -202,6 +224,9 @@ class FirestoreRepository:
                 "terminal_at": None,
                 "announcement_synced": False,
                 "effects_complete": False,
+                "acknowledgement_count": 0,
+                "nudge_count": 0,
+                "announcement_version": 0,
             }
             transaction.create(proposal_ref, proposal_data)
             transaction.create(
@@ -209,7 +234,7 @@ class FirestoreRepository:
                 {
                     "proposal_id": proposal_id,
                     "guild_id": guild_id,
-                    "normalized_name": normalized_name,
+                    "normalized_title": normalized_title,
                     "created_at": created_at,
                 },
             )
@@ -302,6 +327,7 @@ class FirestoreRepository:
                     "terminal_at": now,
                     "announcement_synced": False,
                     "effects_complete": False,
+                    "announcement_version": proposal.announcement_version + 1,
                 },
             )
             if (
@@ -315,10 +341,148 @@ class FirestoreRepository:
                 terminal_at=now,
                 announcement_synced=False,
                 effects_complete=False,
+                announcement_version=proposal.announcement_version + 1,
             )
             return TransitionResult(terminal, True, "transitioned")
 
         return await transition_in_transaction(transaction)
+
+    async def acknowledge(
+        self, proposal_id: str, user_id: str, now: datetime
+    ) -> ProposalActionResult:
+        proposal_ref = self.client.collection("proposals").document(proposal_id)
+        acknowledgement_ref = proposal_ref.collection("acknowledgements").document(
+            user_id
+        )
+        transaction = self.client.transaction()
+
+        @firestore.async_transactional
+        async def acknowledge_in_transaction(transaction: Any) -> ProposalActionResult:
+            proposal_snapshot = await proposal_ref.get(transaction=transaction)
+            acknowledgement = await acknowledgement_ref.get(transaction=transaction)
+            if not proposal_snapshot.exists:
+                return ProposalActionResult(None, False, "not_found")
+            proposal = Proposal.from_document(
+                proposal_snapshot.id, proposal_snapshot.to_dict() or {}
+            )
+            if proposal.status is not ProposalStatus.ACTIVE:
+                return ProposalActionResult(proposal, False, "already_terminal")
+            if now >= proposal.deadline_at:
+                return ProposalActionResult(proposal, False, "deadline_elapsed")
+            if acknowledgement.exists:
+                return ProposalActionResult(proposal, False, "already_acknowledged")
+            updated = replace(
+                proposal,
+                acknowledgement_count=proposal.acknowledgement_count + 1,
+                announcement_version=proposal.announcement_version + 1,
+            )
+            transaction.create(acknowledgement_ref, {"created_at": now})
+            transaction.update(
+                proposal_ref,
+                {
+                    "acknowledgement_count": updated.acknowledgement_count,
+                    "announcement_version": updated.announcement_version,
+                },
+            )
+            return ProposalActionResult(updated, True, "acknowledged")
+
+        return await acknowledge_in_transaction(transaction)
+
+    async def reserve_nudge(
+        self, proposal_id: str, target_user_id: str, now: datetime
+    ) -> ProposalActionResult:
+        proposal_ref = self.client.collection("proposals").document(proposal_id)
+        nudge_ref = proposal_ref.collection("nudges").document(target_user_id)
+        transaction = self.client.transaction()
+
+        @firestore.async_transactional
+        async def reserve_in_transaction(transaction: Any) -> ProposalActionResult:
+            proposal_snapshot = await proposal_ref.get(transaction=transaction)
+            nudge = await nudge_ref.get(transaction=transaction)
+            if not proposal_snapshot.exists:
+                return ProposalActionResult(None, False, "not_found")
+            proposal = Proposal.from_document(
+                proposal_snapshot.id, proposal_snapshot.to_dict() or {}
+            )
+            preference_ref = (
+                self.client.collection("guilds")
+                .document(proposal.guild_id)
+                .collection("preferences")
+                .document(target_user_id)
+            )
+            preference = await preference_ref.get(transaction=transaction)
+            if proposal.status is not ProposalStatus.ACTIVE:
+                return ProposalActionResult(proposal, False, "already_terminal")
+            if now >= proposal.deadline_at:
+                return ProposalActionResult(proposal, False, "deadline_elapsed")
+            if preference.exists and not bool(
+                (preference.to_dict() or {}).get("nudges_enabled", True)
+            ):
+                return ProposalActionResult(proposal, False, "nudges_disabled")
+            if nudge.exists:
+                state = str((nudge.to_dict() or {}).get("state", "pending"))
+                return ProposalActionResult(proposal, False, f"nudge_{state}")
+            if proposal.nudge_count >= 10:
+                return ProposalActionResult(proposal, False, "nudge_limit")
+            updated = replace(proposal, nudge_count=proposal.nudge_count + 1)
+            transaction.create(
+                nudge_ref,
+                {
+                    "user_id": target_user_id,
+                    "state": "pending",
+                    "created_at": now,
+                },
+            )
+            transaction.update(proposal_ref, {"nudge_count": updated.nudge_count})
+            return ProposalActionResult(updated, True, "nudge_pending")
+
+        return await reserve_in_transaction(transaction)
+
+    async def mark_nudge_state(
+        self, proposal_id: str, target_user_id: str, state: str
+    ) -> None:
+        await (
+            self.client.collection("proposals")
+            .document(proposal_id)
+            .collection("nudges")
+            .document(target_user_id)
+            .update(
+                {
+                    "state": state,
+                    "updated_at": firestore.SERVER_TIMESTAMP,
+                }
+            )
+        )
+
+    async def get_nudges_enabled(self, guild_id: str, user_id: str) -> bool:
+        snapshot = await (
+            self.client.collection("guilds")
+            .document(guild_id)
+            .collection("preferences")
+            .document(user_id)
+            .get()
+        )
+        return bool(
+            not snapshot.exists
+            or (snapshot.to_dict() or {}).get("nudges_enabled", True)
+        )
+
+    async def set_nudges_enabled(
+        self, guild_id: str, user_id: str, enabled: bool
+    ) -> None:
+        await (
+            self.client.collection("guilds")
+            .document(guild_id)
+            .collection("preferences")
+            .document(user_id)
+            .set(
+                {
+                    "nudges_enabled": enabled,
+                    "updated_at": firestore.SERVER_TIMESTAMP,
+                },
+                merge=True,
+            )
+        )
 
     async def set_guild_subscription(
         self, guild_id: str, user_id: str, enabled: bool

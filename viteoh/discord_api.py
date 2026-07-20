@@ -79,10 +79,7 @@ class DiscordClient:
             "POST",
             f"/channels/{proposal.output_channel_id}/messages",
             json={
-                "content": (
-                    f"A member proposal for {proposal.display_name} was added, "
-                    f"set to pass <t:{int(proposal.deadline_at.timestamp())}:R>."
-                ),
+                "content": _proposal_content(proposal),
                 "components": proposal_buttons(proposal.id),
                 "allowed_mentions": {"parse": []},
                 "nonce": nonce,
@@ -93,13 +90,13 @@ class DiscordClient:
             raise DiscordAPIError(502, "Discord did not return a message ID")
         return str(result["id"])
 
-    async def sync_terminal_announcement(self, proposal: Proposal) -> None:
-        status_text = {
-            ProposalStatus.PASSED: "passed",
-            ProposalStatus.VETOED: "been vetoed",
-            ProposalStatus.DELETED: "been deleted by an admin",
-        }[proposal.status]
-        content = f"The proposal for {proposal.display_name} has {status_text}."
+    async def sync_proposal_announcement(self, proposal: Proposal) -> None:
+        content = _proposal_content(proposal)
+        components = (
+            proposal_buttons(proposal.id)
+            if proposal.status is ProposalStatus.ACTIVE
+            else []
+        )
         if proposal.message_id:
             try:
                 await self._request(
@@ -110,7 +107,7 @@ class DiscordClient:
                     ),
                     json={
                         "content": content,
-                        "components": [],
+                        "components": components,
                         "allowed_mentions": {"parse": []},
                     },
                 )
@@ -123,6 +120,7 @@ class DiscordClient:
             f"/channels/{proposal.output_channel_id}/messages",
             json={
                 "content": content,
+                "components": components,
                 "allowed_mentions": {"parse": []},
                 "nonce": _nonce(f"{proposal.status}:{proposal.id}"),
                 "enforce_nonce": True,
@@ -177,6 +175,12 @@ class DiscordClient:
             )
         return str(guild.get("name") or guild_id)
 
+    async def get_guild_member(self, guild_id: str, user_id: str) -> dict[str, Any]:
+        result = await self._request("GET", f"/guilds/{guild_id}/members/{user_id}")
+        if not isinstance(result, dict):
+            raise DiscordAPIError(502, "Discord did not return the guild member.")
+        return result
+
     async def send_dm(self, user_id: str, content: str, *, event_key: str) -> None:
         channel = await self._request(
             "POST", "/users/@me/channels", json={"recipient_id": user_id}
@@ -197,6 +201,33 @@ class DiscordClient:
 
 def _nonce(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()[:25]
+
+
+def _proposal_content(proposal: Proposal) -> str:
+    lines = [f"**Proposal: {proposal.title}**"]
+    if proposal.context:
+        lines.extend(("", proposal.context))
+    if proposal.status is ProposalStatus.ACTIVE:
+        status = (
+            f"Unless vetoed, this proposal will pass "
+            f"<t:{int(proposal.deadline_at.timestamp())}:R>."
+        )
+    else:
+        outcome = {
+            ProposalStatus.PASSED: "passed",
+            ProposalStatus.VETOED: "was vetoed",
+            ProposalStatus.DELETED: "was deleted by an admin",
+        }[proposal.status]
+        status = f"This proposal {outcome}."
+    count = proposal.acknowledgement_count
+    lines.extend(
+        (
+            "",
+            status,
+            f"Acknowledged by **{count}** member{'s' if count != 1 else ''}.",
+        )
+    )
+    return "\n".join(lines)
 
 
 def _base_permissions(

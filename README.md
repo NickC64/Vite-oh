@@ -33,14 +33,20 @@ with a Google-signed OIDC token, and Cloud Run IAM rejects every other caller.
 ## Commands
 
 - `/setup [channel] [duration_minutes]` configures a server or shows its setup.
-- `/new <name>` creates a proposal using that server's configured duration.
+- `/new <title> [context]` creates a general proposal using that server's
+  configured duration.
 - `/sub` and `/unsub` control notifications for new proposals.
 - `/view` lists active proposals and their deadlines.
-- `/delete <name>` requires Manage Server permission (or the bot-owner override).
+- `/delete <proposal>` uses autocomplete and requires Manage Server permission
+  (or the bot-owner override).
+- `/nudge <proposal> <user>` anonymously DMs one member about a proposal.
+- `/nudges [enabled]` controls whether that server may nudge you.
 - `/help` shows command help.
 
-Proposal messages provide **Veto** and **Subscribe** buttons. Veto confirmation
-is ephemeral; the identity of the vetoing member is neither stored nor shown.
+Proposal messages provide **Veto**, **Acknowledge**, and **Subscribe** buttons.
+Acknowledgements expose only an aggregate count and never act as yes votes.
+Veto confirmation is ephemeral; the identity of the vetoing member is neither
+stored nor shown.
 
 ## Local development
 
@@ -127,8 +133,8 @@ ensuring the bot token never enters source control, Terraform state, or GitHub.
    `applications.commands` scopes.
 7. Run `/setup channel:#test-output duration_minutes:1` in the test server and
    `/setup channel:#live-output duration_minutes:2880` in the live server.
-8. Smoke-test `/help`, `/sub`, `/new`, Veto, Subscribe, `/view`, and `/delete`
-   independently in both servers.
+8. Smoke-test autocomplete, `/new`, `/nudge`, `/nudges`, Acknowledge, Veto,
+   Subscribe, `/view`, and `/delete` independently in both servers.
 
 The bot remains shown as offline because it uses HTTP interactions rather than
 a Discord Gateway connection. Global command changes can take time to appear.

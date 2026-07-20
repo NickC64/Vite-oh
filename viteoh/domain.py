@@ -40,8 +40,9 @@ class Proposal:
     guild_id: str
     guild_name: str
     output_channel_id: str
-    display_name: str
-    normalized_name: str
+    title: str
+    normalized_title: str
+    context: str
     reservation_id: str
     status: ProposalStatus
     created_at: datetime
@@ -52,6 +53,9 @@ class Proposal:
     terminal_at: datetime | None = None
     announcement_synced: bool = False
     effects_complete: bool = False
+    acknowledgement_count: int = 0
+    nudge_count: int = 0
+    announcement_version: int = 0
 
     @classmethod
     def from_document(cls, document_id: str, data: dict[str, Any]) -> "Proposal":
@@ -60,8 +64,11 @@ class Proposal:
             guild_id=data["guild_id"],
             guild_name=data["guild_name"],
             output_channel_id=data["output_channel_id"],
-            display_name=data["display_name"],
-            normalized_name=data["normalized_name"],
+            title=data.get("title", data.get("display_name", "")),
+            normalized_title=data.get(
+                "normalized_title", data.get("normalized_name", "")
+            ),
+            context=data.get("context", ""),
             reservation_id=data["reservation_id"],
             status=ProposalStatus(data["status"]),
             created_at=_utc(data["created_at"]),
@@ -72,6 +79,9 @@ class Proposal:
             terminal_at=_utc(data["terminal_at"]) if data.get("terminal_at") else None,
             announcement_synced=bool(data.get("announcement_synced", False)),
             effects_complete=bool(data.get("effects_complete", False)),
+            acknowledgement_count=int(data.get("acknowledgement_count", 0)),
+            nudge_count=int(data.get("nudge_count", 0)),
+            announcement_version=int(data.get("announcement_version", 0)),
         )
 
 
@@ -83,6 +93,13 @@ class CreateProposalResult:
 
 @dataclass(frozen=True, slots=True)
 class TransitionResult:
+    proposal: Proposal | None
+    changed: bool
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProposalActionResult:
     proposal: Proposal | None
     changed: bool
     reason: str

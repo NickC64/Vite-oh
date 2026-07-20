@@ -32,7 +32,12 @@ async def cleanup(guild_id: str, channel_id: str) -> dict[str, int]:
     async with httpx.AsyncClient(timeout=30.0, headers=headers) as discord:
         async for snapshot in database.collection("proposals").stream():
             data = snapshot.to_dict() or {}
-            for child_name in ("subscribers", "notifications"):
+            for child_name in (
+                "acknowledgements",
+                "nudges",
+                "notifications",
+                "subscribers",
+            ):
                 totals["children"] += await _delete_collection(
                     snapshot.reference.collection(child_name)
                 )

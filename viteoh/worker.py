@@ -1,13 +1,14 @@
 import logging
 from datetime import timedelta
 from typing import Any
+from uuid import UUID
 
 from viteoh.commands import HELP_TEXT
 from viteoh.components import parse_component_id
 from viteoh.config import Settings
 from viteoh.discord_api import DiscordAPIError, DiscordClient
 from viteoh.domain import GuildConfig, Proposal, ProposalStatus, utcnow
-from viteoh.repository import Repository, normalize_name
+from viteoh.repository import Repository, normalize_title
 from viteoh.tasks import TaskDispatcher
 
 logger = logging.getLogger(__name__)
@@ -76,7 +77,10 @@ class InteractionProcessor:
             )
         if command == "new":
             return await self._new(
-                str(payload["id"]), str(options.get("name", "")), config
+                str(payload["id"]),
+                str(options.get("title", "")),
+                str(options.get("context", "")),
+                config,
             )
         if command == "sub":
             changed = await self.repository.set_guild_subscription(
@@ -102,16 +106,33 @@ class InteractionProcessor:
                 return "There are no active proposals."
             ordered = sorted(proposals, key=lambda proposal: proposal.deadline_at)
             return "Current proposals:\n" + "\n".join(
-                (
-                    f"• {proposal.display_name} — "
-                    f"<t:{int(proposal.deadline_at.timestamp())}:R>"
-                )
+                (f"• {proposal.title} — <t:{int(proposal.deadline_at.timestamp())}:R>")
                 for proposal in ordered
             )
         if command == "delete":
             if not self._is_admin(payload, user_id):
                 return "You need Manage Server permission to use this command."
-            return await self._delete(guild_id, str(options.get("name", "")))
+            return await self._delete(guild_id, str(options.get("proposal", "")))
+        if command == "nudges":
+            enabled = options.get("enabled")
+            if enabled is None:
+                current = await self.repository.get_nudges_enabled(guild_id, user_id)
+                return (
+                    "Anonymous proposal nudges are currently "
+                    f"{'enabled' if current else 'disabled'} for you in this server."
+                )
+            await self.repository.set_nudges_enabled(guild_id, user_id, bool(enabled))
+            return (
+                "Anonymous proposal nudges are now "
+                f"{'enabled' if enabled else 'disabled'} for you in this server."
+            )
+        if command == "nudge":
+            return await self._nudge(
+                guild_id,
+                user_id,
+                str(options.get("proposal", "")),
+                str(options.get("user", "")),
+            )
         return "Unknown command."
 
     async def _setup(
@@ -169,13 +190,20 @@ class InteractionProcessor:
         return "Configuration saved.\n" + _format_config(config)
 
     async def _new(
-        self, interaction_id: str, display_name: str, config: GuildConfig
+        self,
+        interaction_id: str,
+        title: str,
+        context: str,
+        config: GuildConfig,
     ) -> str:
-        display_name = " ".join(display_name.split())
+        title = " ".join(title.split())
+        context = context.strip()
         try:
-            normalized = normalize_name(display_name)
+            normalized = normalize_title(title)
         except ValueError as exc:
             return str(exc)
+        if len(context) > 1000:
+            return "Proposal context cannot exceed 1,000 characters."
         now = utcnow()
         deadline = now + timedelta(seconds=config.proposal_timeout_seconds)
         result = await self.repository.create_proposal(
@@ -183,13 +211,14 @@ class InteractionProcessor:
             config.guild_id,
             config.guild_name,
             config.output_channel_id,
-            display_name,
+            title,
             normalized,
+            context,
             now,
             deadline,
         )
         if result.duplicate_name or not result.proposal:
-            return f"A proposal for '{display_name}' already exists."
+            return f"An active proposal titled '{title}' already exists."
         proposal = result.proposal
 
         task_name = await self.tasks.ensure_deadline(proposal.id, proposal.deadline_at)
@@ -224,28 +253,75 @@ class InteractionProcessor:
             f"<t:{int(proposal.deadline_at.timestamp())}:R> unless vetoed."
         )
 
-    async def _delete(self, guild_id: str, display_name: str) -> str:
-        try:
-            normalized = normalize_name(display_name)
-        except ValueError as exc:
-            return str(exc)
-        proposal = next(
-            (
-                item
-                for item in await self.repository.list_active(guild_id)
-                if item.normalized_name == normalized
-            ),
-            None,
-        )
+    async def _delete(self, guild_id: str, proposal_id: str) -> str:
+        proposal = await self._active_proposal(guild_id, proposal_id)
         if not proposal:
-            return f"No active proposal found for '{display_name}'."
+            return "Select a valid active proposal from this server."
         result = await self.repository.transition(
             proposal.id, ProposalStatus.DELETED, utcnow()
         )
         if result.proposal:
             await self.tasks.delete(result.proposal.deadline_task_name)
             await self.sync_terminal_effects(result.proposal)
-        return f"Proposal for '{proposal.display_name}' has been deleted."
+        return f"Proposal '{proposal.title}' has been deleted."
+
+    async def _nudge(
+        self,
+        guild_id: str,
+        user_id: str,
+        proposal_id: str,
+        target_user_id: str,
+    ) -> str:
+        proposal = await self._active_proposal(guild_id, proposal_id)
+        if not proposal:
+            return "Select a valid active proposal from this server."
+        if target_user_id == user_id:
+            return "You cannot nudge yourself."
+        try:
+            member = await self.discord.get_guild_member(guild_id, target_user_id)
+        except DiscordAPIError as exc:
+            if exc.retryable:
+                raise
+            return "That user is not a member of this server."
+        target_user = member.get("user")
+        if isinstance(target_user, dict) and bool(target_user.get("bot")):
+            return "Bots cannot receive proposal nudges."
+        reserved = await self.repository.reserve_nudge(
+            proposal.id, target_user_id, utcnow()
+        )
+        if reserved.reason == "nudges_disabled":
+            return "That member has disabled anonymous nudges in this server."
+        if reserved.reason == "nudge_limit":
+            return "This proposal has reached its limit of 10 nudged members."
+        if reserved.reason in {"nudge_delivered", "nudge_failed"}:
+            return "This member has already been nudged for this proposal."
+        if reserved.reason in {
+            "not_found",
+            "already_terminal",
+            "deadline_elapsed",
+        }:
+            return "This proposal is no longer active."
+        if reserved.reason != "nudge_pending" or not reserved.proposal:
+            return "This member has already been nudged for this proposal."
+
+        proposal = reserved.proposal
+        try:
+            await self.discord.send_dm(
+                target_user_id,
+                _nudge_text(proposal),
+                event_key=f"{proposal.id}:nudge:{target_user_id}",
+            )
+        except DiscordAPIError as exc:
+            if exc.retryable:
+                raise
+            await self.repository.mark_nudge_state(
+                proposal.id, target_user_id, "failed"
+            )
+            return (
+                "I could not deliver that nudge, likely because their DMs are closed."
+            )
+        await self.repository.mark_nudge_state(proposal.id, target_user_id, "delivered")
+        return "Nudge sent. The recipient was not told who requested it."
 
     async def _component(
         self, payload: dict[str, Any], guild_id: str, user_id: str
@@ -269,6 +345,19 @@ class InteractionProcessor:
                 "You have subscribed to updates for this proposal."
                 if added
                 else "You are already subscribed to this proposal."
+            )
+        if action == "acknowledge":
+            acknowledgement = await self.repository.acknowledge(
+                proposal_id, user_id, utcnow()
+            )
+            if acknowledgement.reason == "already_acknowledged":
+                return "You have already acknowledged seeing this proposal."
+            if not acknowledgement.changed or not acknowledgement.proposal:
+                return "This proposal is no longer active."
+            await self._sync_announcement(proposal_id)
+            return (
+                "Acknowledged. This records only that you saw the proposal; "
+                "you may still veto it before the deadline."
             )
         if action == "confirm-veto":
             result = await self.repository.transition(
@@ -334,7 +423,7 @@ class InteractionProcessor:
 
     async def sync_terminal_effects(self, proposal: Proposal) -> None:
         if not proposal.announcement_synced:
-            await self.discord.sync_terminal_announcement(proposal)
+            await self._sync_announcement(proposal.id)
             await self.repository.mark_announcement_synced(proposal.id)
         subscribers = await self.repository.proposal_subscribers(proposal.id)
         event = proposal.status.value
@@ -343,24 +432,51 @@ class InteractionProcessor:
             ProposalStatus.VETOED: "been vetoed",
             ProposalStatus.DELETED: "been deleted by an admin",
         }[proposal.status]
-        link = _proposal_link(proposal)
         text = (
-            f"In **{proposal.guild_name}**, the proposal for "
-            f"{proposal.display_name} has {outcome}: {link}"
+            f"In **{proposal.guild_name}**, this proposal has {outcome}:\n"
+            f"{_proposal_details(proposal)}\n{_proposal_link(proposal)}"
         )
         await self._notify(proposal, event, subscribers, text)
         await self.repository.mark_effects_complete(proposal.id)
 
     async def _notify_created(self, proposal: Proposal) -> None:
         subscribers = await self.repository.guild_subscribers(proposal.guild_id)
-        link = _proposal_link(proposal)
         await self._notify(
             proposal,
             "created",
             subscribers,
-            f"In **{proposal.guild_name}**, a new proposal for "
-            f"{proposal.display_name} has been created: {link}",
+            _created_text(proposal),
         )
+
+    async def _sync_announcement(self, proposal_id: str) -> Proposal | None:
+        latest: Proposal | None = None
+        for _ in range(4):
+            latest = await self.repository.get_proposal(proposal_id)
+            if not latest:
+                return None
+            version = latest.announcement_version
+            await self.discord.sync_proposal_announcement(latest)
+            current = await self.repository.get_proposal(proposal_id)
+            if not current or current.announcement_version == version:
+                return current or latest
+        return latest
+
+    async def _active_proposal(
+        self, guild_id: str, proposal_id: str
+    ) -> Proposal | None:
+        try:
+            if str(UUID(proposal_id)) != proposal_id:
+                return None
+        except ValueError:
+            return None
+        proposal = await self.repository.get_proposal(proposal_id)
+        if (
+            not proposal
+            or proposal.guild_id != guild_id
+            or proposal.status is not ProposalStatus.ACTIVE
+        ):
+            return None
+        return proposal
 
     async def _notify(
         self,
@@ -427,4 +543,27 @@ def _proposal_link(proposal: Proposal) -> str:
     return (
         f"https://discord.com/channels/{proposal.guild_id}/"
         f"{proposal.output_channel_id}/{proposal.message_id}"
+    )
+
+
+def _proposal_details(proposal: Proposal) -> str:
+    context = f"\n{proposal.context}" if proposal.context else ""
+    return (
+        f"**{proposal.title}**{context}\n"
+        f"Deadline: <t:{int(proposal.deadline_at.timestamp())}:F>"
+    )
+
+
+def _created_text(proposal: Proposal) -> str:
+    return (
+        f"A new proposal was created in **{proposal.guild_name}**:\n"
+        f"{_proposal_details(proposal)}\n{_proposal_link(proposal)}"
+    )
+
+
+def _nudge_text(proposal: Proposal) -> str:
+    return (
+        f"Someone in **{proposal.guild_name}** wants to make sure you saw this "
+        f"proposal. This does not imply that they support or oppose it:\n"
+        f"{_proposal_details(proposal)}\n{_proposal_link(proposal)}"
     )

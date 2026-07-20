@@ -41,6 +41,12 @@ resource "google_project_iam_member" "receiver_task_manager" {
   member  = "serviceAccount:${google_service_account.receiver.email}"
 }
 
+resource "google_project_iam_member" "receiver_firestore_reader" {
+  project = var.project_id
+  role    = "roles/datastore.viewer"
+  member  = "serviceAccount:${google_service_account.receiver.email}"
+}
+
 resource "google_project_iam_member" "worker_roles" {
   for_each = toset([
     "roles/cloudtasks.enqueuer",
@@ -244,6 +250,7 @@ resource "google_cloud_run_v2_service" "receiver" {
     }
   }
   depends_on = [
+    google_project_iam_member.receiver_firestore_reader,
     google_project_iam_member.receiver_task_manager,
     google_service_account_iam_member.task_act_as,
   ]

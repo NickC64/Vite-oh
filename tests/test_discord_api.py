@@ -21,8 +21,9 @@ def proposal(status: ProposalStatus = ProposalStatus.ACTIVE) -> Proposal:
         guild_id="guild",
         guild_name="Test Guild",
         output_channel_id="channel",
-        display_name="Alice",
-        normalized_name="alice",
+        title="Alice",
+        normalized_title="alice",
+        context="Supporting context",
         reservation_id="reserve",
         status=status,
         created_at=now,
@@ -56,7 +57,7 @@ async def test_discord_announcement_edit_response_and_dm() -> None:
     assert body["components"]
 
     await client.edit_interaction_response("interaction-token", "Done")
-    await client.sync_terminal_announcement(proposal(ProposalStatus.PASSED))
+    await client.sync_proposal_announcement(proposal(ProposalStatus.PASSED))
     await client.send_dm("user", "Hello", event_key="event")
     assert any(
         request.url.path.endswith("/channels/dm/messages") for request in requests

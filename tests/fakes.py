@@ -7,6 +7,7 @@ from viteoh.domain import (
     CreateProposalResult,
     GuildConfig,
     Proposal,
+    ProposalActionResult,
     ProposalStatus,
     TransitionResult,
 )
@@ -21,6 +22,9 @@ class FakeRepository:
         self.guild_users: dict[str, set[str]] = {}
         self.subscribers: dict[str, set[str]] = {}
         self.delivered: set[tuple[str, str, str]] = set()
+        self.acknowledgements: dict[str, set[str]] = {}
+        self.nudges: dict[str, dict[str, str]] = {}
+        self.nudge_preferences: dict[tuple[str, str], bool] = {}
         self.lock = asyncio.Lock()
         self.next_id = "12345678-1234-1234-1234-123456789abc"
 
@@ -55,8 +59,9 @@ class FakeRepository:
         guild_id: str,
         guild_name: str,
         output_channel_id: str,
-        display_name: str,
-        normalized_name: str,
+        title: str,
+        normalized_title: str,
+        context: str,
         created_at: datetime,
         deadline_at: datetime,
     ) -> CreateProposalResult:
@@ -68,7 +73,7 @@ class FakeRepository:
             if any(
                 item.status is ProposalStatus.ACTIVE
                 and item.guild_id == guild_id
-                and item.normalized_name == normalized_name
+                and item.normalized_title == normalized_title
                 for item in self.proposals.values()
             ):
                 return CreateProposalResult(None, True)
@@ -77,9 +82,10 @@ class FakeRepository:
                 guild_id=guild_id,
                 guild_name=guild_name,
                 output_channel_id=output_channel_id,
-                display_name=display_name,
-                normalized_name=normalized_name,
-                reservation_id=reservation_id(guild_id, normalized_name),
+                title=title,
+                normalized_title=normalized_title,
+                context=context,
+                reservation_id=reservation_id(guild_id, normalized_title),
                 status=ProposalStatus.ACTIVE,
                 created_at=created_at,
                 deadline_at=deadline_at,
@@ -141,9 +147,73 @@ class FakeRepository:
                 terminal_at=now,
                 announcement_synced=False,
                 effects_complete=False,
+                announcement_version=proposal.announcement_version + 1,
             )
             self.proposals[proposal_id] = updated
             return TransitionResult(updated, True, "transitioned")
+
+    async def acknowledge(
+        self, proposal_id: str, user_id: str, now: datetime
+    ) -> ProposalActionResult:
+        async with self.lock:
+            proposal = self.proposals.get(proposal_id)
+            if not proposal:
+                return ProposalActionResult(None, False, "not_found")
+            if proposal.status is not ProposalStatus.ACTIVE:
+                return ProposalActionResult(proposal, False, "already_terminal")
+            if now >= proposal.deadline_at:
+                return ProposalActionResult(proposal, False, "deadline_elapsed")
+            users = self.acknowledgements.setdefault(proposal_id, set())
+            if user_id in users:
+                return ProposalActionResult(proposal, False, "already_acknowledged")
+            users.add(user_id)
+            updated = replace(
+                proposal,
+                acknowledgement_count=proposal.acknowledgement_count + 1,
+                announcement_version=proposal.announcement_version + 1,
+            )
+            self.proposals[proposal_id] = updated
+            return ProposalActionResult(updated, True, "acknowledged")
+
+    async def reserve_nudge(
+        self, proposal_id: str, target_user_id: str, now: datetime
+    ) -> ProposalActionResult:
+        async with self.lock:
+            proposal = self.proposals.get(proposal_id)
+            if not proposal:
+                return ProposalActionResult(None, False, "not_found")
+            if proposal.status is not ProposalStatus.ACTIVE:
+                return ProposalActionResult(proposal, False, "already_terminal")
+            if now >= proposal.deadline_at:
+                return ProposalActionResult(proposal, False, "deadline_elapsed")
+            if not self.nudge_preferences.get(
+                (proposal.guild_id, target_user_id), True
+            ):
+                return ProposalActionResult(proposal, False, "nudges_disabled")
+            nudges = self.nudges.setdefault(proposal_id, {})
+            if target_user_id in nudges:
+                return ProposalActionResult(
+                    proposal, False, f"nudge_{nudges[target_user_id]}"
+                )
+            if proposal.nudge_count >= 10:
+                return ProposalActionResult(proposal, False, "nudge_limit")
+            nudges[target_user_id] = "pending"
+            updated = replace(proposal, nudge_count=proposal.nudge_count + 1)
+            self.proposals[proposal_id] = updated
+            return ProposalActionResult(updated, True, "nudge_pending")
+
+    async def mark_nudge_state(
+        self, proposal_id: str, target_user_id: str, state: str
+    ) -> None:
+        self.nudges[proposal_id][target_user_id] = state
+
+    async def get_nudges_enabled(self, guild_id: str, user_id: str) -> bool:
+        return self.nudge_preferences.get((guild_id, user_id), True)
+
+    async def set_nudges_enabled(
+        self, guild_id: str, user_id: str, enabled: bool
+    ) -> None:
+        self.nudge_preferences[(guild_id, user_id)] = enabled
 
     async def set_guild_subscription(
         self, guild_id: str, user_id: str, enabled: bool
@@ -228,9 +298,14 @@ class FakeDiscord:
         self.announcements: list[Proposal] = []
         self.synced: list[Proposal] = []
         self.dms: list[tuple[str, str]] = []
+        self.dm_failures: set[str] = set()
         self.channels: dict[str, tuple[str, str]] = {
             "channel": ("guild", "Test Guild"),
             "channel-2": ("guild-2", "Second Guild"),
+        }
+        self.members: dict[tuple[str, str], dict[str, object]] = {
+            ("guild", "target"): {"user": {"id": "target", "bot": False}},
+            ("guild", "bot"): {"user": {"id": "bot", "bot": True}},
         }
 
     async def edit_interaction_response(self, token: str, content: str) -> None:
@@ -240,8 +315,16 @@ class FakeDiscord:
         self.announcements.append(proposal)
         return "999"
 
-    async def sync_terminal_announcement(self, proposal: Proposal) -> None:
+    async def sync_proposal_announcement(self, proposal: Proposal) -> None:
         self.synced.append(proposal)
+
+    async def get_guild_member(self, guild_id: str, user_id: str) -> dict[str, object]:
+        from viteoh.discord_api import DiscordAPIError
+
+        member = self.members.get((guild_id, user_id))
+        if not member:
+            raise DiscordAPIError(404, "member not found")
+        return member
 
     async def validate_output_channel(self, guild_id: str, channel_id: str) -> str:
         channel = self.channels.get(channel_id)
@@ -254,4 +337,8 @@ class FakeDiscord:
         return channel[1]
 
     async def send_dm(self, user_id: str, content: str, *, event_key: str) -> None:
+        if user_id in self.dm_failures:
+            from viteoh.discord_api import DiscordAPIError
+
+            raise DiscordAPIError(403, "DMs closed")
         self.dms.append((user_id, content))

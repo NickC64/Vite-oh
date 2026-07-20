@@ -1,7 +1,7 @@
 import re
 
 _COMPONENT_RE = re.compile(
-    r"^proposal:(?P<action>veto|confirm-veto|cancel-veto|subscribe):"
+    r"^proposal:(?P<action>veto|confirm-veto|cancel-veto|subscribe|acknowledge):"
     r"(?P<proposal_id>[0-9a-f-]{36})$"
 )
 
@@ -31,6 +31,7 @@ def button(label: str, style: int, custom_id: str) -> dict[str, object]:
 def proposal_buttons(proposal_id: str) -> list[dict[str, object]]:
     return action_row(
         button("Veto", 4, component_id("veto", proposal_id)),
+        button("Acknowledge", 2, component_id("acknowledge", proposal_id)),
         button("Subscribe", 1, component_id("subscribe", proposal_id)),
     )
 

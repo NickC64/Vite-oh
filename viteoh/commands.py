@@ -23,16 +23,23 @@ COMMANDS: list[dict[str, object]] = [
     },
     {
         "name": "new",
-        "description": "Propose a new member",
+        "description": "Create a new consent-based proposal",
         "type": 1,
         "options": [
             {
-                "name": "name",
-                "description": "Name of the proposed member",
+                "name": "title",
+                "description": "Short title for the proposal",
                 "type": 3,
                 "required": True,
                 "max_length": 100,
-            }
+            },
+            {
+                "name": "context",
+                "description": "Optional explanation or supporting link",
+                "type": 3,
+                "required": False,
+                "max_length": 1000,
+            },
         ],
     },
     {
@@ -48,15 +55,48 @@ COMMANDS: list[dict[str, object]] = [
     {"name": "view", "description": "View all current proposals", "type": 1},
     {
         "name": "delete",
-        "description": "(Manage Server) Delete a specific proposal",
+        "description": "(Manage Server) Delete an active proposal",
         "type": 1,
         "options": [
             {
-                "name": "name",
-                "description": "Name of the member being proposed",
+                "name": "proposal",
+                "description": "Active proposal to delete",
                 "type": 3,
                 "required": True,
-                "max_length": 100,
+                "autocomplete": True,
+            }
+        ],
+    },
+    {
+        "name": "nudge",
+        "description": "Anonymously notify a member about an active proposal",
+        "type": 1,
+        "options": [
+            {
+                "name": "proposal",
+                "description": "Active proposal to bring to their attention",
+                "type": 3,
+                "required": True,
+                "autocomplete": True,
+            },
+            {
+                "name": "user",
+                "description": "Member to notify",
+                "type": 6,
+                "required": True,
+            },
+        ],
+    },
+    {
+        "name": "nudges",
+        "description": "View or change whether this server may nudge you",
+        "type": 1,
+        "options": [
+            {
+                "name": "enabled",
+                "description": "Allow anonymous proposal nudges from this server",
+                "type": 5,
+                "required": False,
             }
         ],
     },
@@ -66,12 +106,14 @@ COMMANDS: list[dict[str, object]] = [
 HELP_TEXT = """**Available Commands**
 
 `/setup [channel] [duration_minutes]` — Configure or view this server.
-`/new <name>` — Create a proposal using this server's configured duration.
+`/new <title> [context]` — Create a general proposal.
 `/sub` — Subscribe to notifications about new proposals.
 `/unsub` — Stop notifications about new proposals.
 `/view` — View active proposals.
-`/delete <name>` — Delete a proposal (Manage Server required).
+`/delete <proposal>` — Delete a proposal (Manage Server required).
+`/nudge <proposal> <user>` — Anonymously notify one member.
+`/nudges [enabled]` — View or change your nudge preference.
 `/help` — Show this help.
 
-Use **Veto** on a proposal to veto anonymously. Use **Subscribe** to receive
-updates about that proposal."""
+Use **Veto** to object anonymously, **Acknowledge** to privately record that
+you saw a proposal, and **Subscribe** to receive updates."""

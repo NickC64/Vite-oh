@@ -1,12 +1,14 @@
 import json
 import time
+from datetime import timedelta
 
 import pytest
 from nacl.signing import SigningKey
 
-from tests.fakes import FakeTasks
+from tests.fakes import FakeRepository, FakeTasks
 from viteoh.components import component_id
 from viteoh.config import Settings
+from viteoh.domain import utcnow
 from viteoh.receiver import InteractionReceiver
 from viteoh.security import SignatureVerifier
 
@@ -96,3 +98,81 @@ async def test_another_guild_is_accepted(
     )
     assert response["type"] == 5
     assert tasks.interactions[-1]["guild_id"] == "other"
+
+
+async def test_autocomplete_returns_filtered_uuid_choices() -> None:
+    key = SigningKey.generate()
+    tasks = FakeTasks()
+    repository = FakeRepository()
+    now = utcnow()
+    await repository.create_proposal(
+        "one",
+        "guild",
+        "Test Guild",
+        "channel",
+        "Alpha proposal",
+        "alpha proposal",
+        "",
+        now,
+        now + timedelta(minutes=5),
+    )
+    service = InteractionReceiver(
+        Settings(discord_public_key=key.verify_key.encode().hex()),
+        SignatureVerifier(key.verify_key.encode().hex()),
+        tasks,
+        repository,  # type: ignore[arg-type]
+    )
+    _, response = await signed_receive(
+        service,
+        key,
+        {
+            "id": "45",
+            "type": 4,
+            "guild_id": "guild",
+            "member": {"user": {"id": "user"}},
+            "data": {
+                "name": "nudge",
+                "options": [
+                    {
+                        "name": "proposal",
+                        "value": "ALP",
+                        "focused": True,
+                    }
+                ],
+            },
+        },
+    )
+    assert response["type"] == 8
+    assert response["data"]["choices"] == [
+        {"name": "Alpha proposal", "value": repository.next_id}
+    ]
+    assert not tasks.interactions
+
+
+async def test_autocomplete_errors_return_empty_choices() -> None:
+    class BrokenRepository:
+        async def list_active(self, guild_id: str) -> list[object]:
+            raise RuntimeError(guild_id)
+
+    key = SigningKey.generate()
+    service = InteractionReceiver(
+        Settings(discord_public_key=key.verify_key.encode().hex()),
+        SignatureVerifier(key.verify_key.encode().hex()),
+        FakeTasks(),
+        BrokenRepository(),  # type: ignore[arg-type]
+    )
+    _, response = await signed_receive(
+        service,
+        key,
+        {
+            "id": "46",
+            "type": 4,
+            "guild_id": "guild",
+            "member": {"user": {"id": "user"}},
+            "data": {
+                "name": "delete",
+                "options": [{"name": "proposal", "value": "", "focused": True}],
+            },
+        },
+    )
+    assert response == {"type": 8, "data": {"choices": []}}
