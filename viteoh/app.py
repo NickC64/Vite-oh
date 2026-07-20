@@ -36,10 +36,13 @@ def create_app(
         if receiver is None and processor is None:
             tasks = TaskDispatcher(settings)
             if settings.service_role == "receiver":
-                firestore_client = firestore.AsyncClient(
-                    project=settings.google_cloud_project,
-                    database=settings.firestore_database,
-                )
+                repository = None
+                if settings.google_cloud_project:
+                    firestore_client = firestore.AsyncClient(
+                        project=settings.google_cloud_project,
+                        database=settings.firestore_database,
+                    )
+                    repository = FirestoreRepository(firestore_client)
                 resources["receiver"] = InteractionReceiver(
                     settings,
                     SignatureVerifier(
@@ -47,7 +50,7 @@ def create_app(
                         settings.signature_max_age_seconds,
                     ),
                     tasks,
-                    FirestoreRepository(firestore_client),
+                    repository,
                 )
             else:
                 firestore_client = firestore.AsyncClient(
