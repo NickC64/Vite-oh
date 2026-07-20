@@ -69,64 +69,44 @@ Run a local receiver with:
 SERVICE_ROLE=receiver uv run uvicorn viteoh.app:app --reload
 ```
 
-## Google Cloud bootstrap
+## Google Cloud deployment
 
-Infrastructure is defined in [`infra/`](infra). All production resources use
-`northamerica-northeast1` (Montréal). The default Firestore database is created
-in that location permanently, so confirm the project does not already have a
-default database elsewhere.
+Terraform is split into two states under [`infra/`](infra):
 
-1. Create a Google Cloud project and a globally unique GCS bucket for Terraform
-   state.
-2. Copy `infra/terraform.tfvars.example` to `infra/terraform.tfvars` and fill in
-   the non-secret IDs. Never put the Discord bot token in Terraform.
-3. Bootstrap the APIs, registry, secret container, and GitHub identity:
+- `bootstrap` is applied locally by a project administrator and owns APIs,
+  Artifact Registry, Secret Manager, GitHub federation, deployer IAM, and
+  state-bucket access.
+- `application` is applied only by GitHub Actions and owns the runtime services,
+  data infrastructure, queues, scheduler, and monitoring.
 
-   ```bash
-   cd infra
-   terraform init -backend-config="bucket=YOUR_STATE_BUCKET"
-   terraform apply \
-     -target=google_project_service.apis \
-     -target=google_artifact_registry_repository.app \
-     -target=google_secret_manager_secret.discord_bot_token \
-     -target=google_iam_workload_identity_pool.github \
-     -target=google_iam_workload_identity_pool_provider.github \
-     -target=google_service_account.deployer \
-     -target=google_service_account_iam_member.github_wif \
-     -target=google_project_iam_member.deployer_roles \
-     -target=google_project_iam_member.deployer_service_account_user
-   ```
+This keeps GitHub as the single source of truth for application configuration
+and prevents the deployer from managing the identity provider it uses to
+authenticate. See [`infra/README.md`](infra/README.md) for first-time bootstrap
+and existing-state migration instructions.
 
-4. Add the bot token directly to Secret Manager:
+Configure the GitHub `production` environment:
 
-   ```bash
-   printf '%s' "$DISCORD_BOT_TOKEN" | \
-     gcloud secrets versions add viteoh-discord-bot-token --data-file=-
-   ```
+Variables:
 
-5. Configure the GitHub `production` environment:
+- `GCP_PROJECT_ID`
+- `GCP_WORKLOAD_IDENTITY_PROVIDER` from the bootstrap output
+- `GCP_DEPLOYER_SERVICE_ACCOUNT` from the bootstrap output
+- `TERRAFORM_STATE_BUCKET`
+- `DISCORD_APPLICATION_ID`
+- `DISCORD_GUILD_ID`
+- `DISCORD_OUTPUT_CHANNEL_ID`
+- `DISCORD_OWNER_USER_ID`
 
-   Variables:
+Secret:
 
-   - `GCP_PROJECT_ID`
-   - `GCP_WORKLOAD_IDENTITY_PROVIDER` from `terraform output`
-   - `GCP_DEPLOYER_SERVICE_ACCOUNT` from `terraform output`
-   - `TERRAFORM_STATE_BUCKET`
-   - `DISCORD_APPLICATION_ID`
-   - `DISCORD_GUILD_ID`
-   - `DISCORD_OUTPUT_CHANNEL_ID`
-   - `DISCORD_OWNER_USER_ID`
+- `DISCORD_PUBLIC_KEY`
 
-   Secret:
+Push to `main`. CI builds an immutable commit-SHA image, applies only the
+application stack, deploys both services, and runs the command-registration
+Cloud Run job.
 
-   - `DISCORD_PUBLIC_KEY`
-
-6. Push to `main`. CI builds an immutable commit-SHA image, applies Terraform,
-   deploys both services, and runs the command-registration Cloud Run job.
-
-Terraform intentionally creates the Secret Manager secret but no secret
-version, ensuring the bot token never enters source control, Terraform state,
-or GitHub.
+The bootstrap stack creates the Secret Manager container but no secret version,
+ensuring the bot token never enters source control, Terraform state, or GitHub.
 
 ## Discord cutover
 
@@ -134,9 +114,14 @@ or GitHub.
    intentionally starts with an empty Firestore database.
 2. Let the production workflow deploy and register the guild commands.
 3. Confirm the interaction endpoint responds to `/healthz`.
-4. Copy `terraform output -raw interaction_endpoint_url` to the Discord
-   Developer Portal's **Interactions Endpoint URL**. Discord will validate its
-   signature and PING handling.
+4. Get the deployed endpoint:
+
+   ```bash
+   terraform -chdir=infra/application output -raw interaction_endpoint_url
+   ```
+
+   Copy it to the Discord Developer Portal's **Interactions Endpoint URL**.
+   Discord will validate its signature and PING handling.
 5. Stop the old Gateway/WebSocket process.
 6. Smoke-test `/help`, `/sub`, `/new`, Veto, Subscribe, `/view`, and the
    owner-only `/delete`.

@@ -1,11 +1,3 @@
-output "interaction_endpoint_url" {
-  value = "${google_cloud_run_v2_service.receiver.uri}/interactions"
-}
-
-output "worker_url" {
-  value = local.worker_url
-}
-
 output "artifact_registry_repository" {
   value = google_artifact_registry_repository.app.name
 }

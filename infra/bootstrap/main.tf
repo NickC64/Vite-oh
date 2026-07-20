@@ -1,3 +1,43 @@
+locals {
+  required_apis = toset([
+    "artifactregistry.googleapis.com",
+    "cloudresourcemanager.googleapis.com",
+    "cloudscheduler.googleapis.com",
+    "cloudtasks.googleapis.com",
+    "firestore.googleapis.com",
+    "iam.googleapis.com",
+    "iamcredentials.googleapis.com",
+    "logging.googleapis.com",
+    "monitoring.googleapis.com",
+    "run.googleapis.com",
+    "secretmanager.googleapis.com",
+    "serviceusage.googleapis.com",
+    "storage.googleapis.com",
+    "sts.googleapis.com",
+  ])
+}
+
+resource "google_project_service" "apis" {
+  for_each           = local.required_apis
+  service            = each.value
+  disable_on_destroy = false
+}
+
+resource "google_artifact_registry_repository" "app" {
+  location      = var.region
+  repository_id = "viteoh"
+  format        = "DOCKER"
+  depends_on    = [google_project_service.apis]
+}
+
+resource "google_secret_manager_secret" "discord_bot_token" {
+  secret_id = "viteoh-discord-bot-token"
+  replication {
+    auto {}
+  }
+  depends_on = [google_project_service.apis]
+}
+
 resource "google_iam_workload_identity_pool" "github" {
   workload_identity_pool_id = "viteoh-github"
   display_name              = "Vite-oh GitHub Actions"
@@ -32,7 +72,7 @@ resource "google_service_account_iam_member" "github_wif" {
 
 resource "google_project_iam_member" "deployer_roles" {
   for_each = toset([
-    "roles/artifactregistry.admin",
+    "roles/artifactregistry.writer",
     "roles/cloudscheduler.admin",
     "roles/cloudtasks.admin",
     "roles/datastore.owner",
@@ -42,7 +82,6 @@ resource "google_project_iam_member" "deployer_roles" {
     "roles/resourcemanager.projectIamAdmin",
     "roles/run.admin",
     "roles/secretmanager.admin",
-    "roles/serviceusage.serviceUsageAdmin",
   ])
   project = var.project_id
   role    = each.value
@@ -53,4 +92,10 @@ resource "google_project_iam_member" "deployer_service_account_user" {
   project = var.project_id
   role    = "roles/iam.serviceAccountUser"
   member  = "serviceAccount:${google_service_account.deployer.email}"
+}
+
+resource "google_storage_bucket_iam_member" "deployer_state" {
+  bucket = var.terraform_state_bucket
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.deployer.email}"
 }

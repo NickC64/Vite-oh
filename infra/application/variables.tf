@@ -14,11 +14,6 @@ variable "container_image" {
   type        = string
 }
 
-variable "github_repository" {
-  description = "GitHub repository in owner/name form."
-  type        = string
-}
-
 variable "discord_application_id" {
   type = string
 }

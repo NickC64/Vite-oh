@@ -2,35 +2,12 @@ locals {
   service_name_receiver = "viteoh-interactions"
   service_name_worker   = "viteoh-worker"
   worker_url            = "https://${local.service_name_worker}-${data.google_project.current.number}.${var.region}.run.app"
-  required_apis = toset([
-    "artifactregistry.googleapis.com",
-    "cloudresourcemanager.googleapis.com",
-    "cloudscheduler.googleapis.com",
-    "cloudtasks.googleapis.com",
-    "firestore.googleapis.com",
-    "iam.googleapis.com",
-    "iamcredentials.googleapis.com",
-    "logging.googleapis.com",
-    "monitoring.googleapis.com",
-    "run.googleapis.com",
-    "secretmanager.googleapis.com",
-    "sts.googleapis.com",
-  ])
 }
 
 data "google_project" "current" {}
 
-resource "google_project_service" "apis" {
-  for_each           = local.required_apis
-  service            = each.value
-  disable_on_destroy = false
-}
-
-resource "google_artifact_registry_repository" "app" {
-  location      = var.region
-  repository_id = "viteoh"
-  format        = "DOCKER"
-  depends_on    = [google_project_service.apis]
+data "google_secret_manager_secret" "discord_bot_token" {
+  secret_id = "viteoh-discord-bot-token"
 }
 
 resource "google_firestore_database" "app" {
@@ -41,15 +18,6 @@ resource "google_firestore_database" "app" {
   concurrency_mode            = "PESSIMISTIC"
   app_engine_integration_mode = "DISABLED"
   delete_protection_state     = "DELETE_PROTECTION_ENABLED"
-  depends_on                  = [google_project_service.apis]
-}
-
-resource "google_secret_manager_secret" "discord_bot_token" {
-  secret_id = "viteoh-discord-bot-token"
-  replication {
-    auto {}
-  }
-  depends_on = [google_project_service.apis]
 }
 
 resource "google_service_account" "receiver" {
@@ -96,7 +64,7 @@ resource "google_service_account_iam_member" "task_act_as" {
 }
 
 resource "google_secret_manager_secret_iam_member" "worker_token" {
-  secret_id = google_secret_manager_secret.discord_bot_token.id
+  secret_id = data.google_secret_manager_secret.discord_bot_token.id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.worker.email}"
 }
@@ -115,7 +83,6 @@ resource "google_cloud_tasks_queue" "interactions" {
     max_backoff        = "60s"
     max_doublings      = 5
   }
-  depends_on = [google_project_service.apis]
 }
 
 resource "google_cloud_tasks_queue" "deadlines" {
@@ -132,7 +99,6 @@ resource "google_cloud_tasks_queue" "deadlines" {
     max_backoff        = "3600s"
     max_doublings      = 8
   }
-  depends_on = [google_project_service.apis]
 }
 
 resource "google_cloud_run_v2_service" "worker" {
@@ -204,7 +170,7 @@ resource "google_cloud_run_v2_service" "worker" {
         name = "DISCORD_BOT_TOKEN"
         value_source {
           secret_key_ref {
-            secret  = google_secret_manager_secret.discord_bot_token.secret_id
+            secret  = data.google_secret_manager_secret.discord_bot_token.secret_id
             version = "latest"
           }
         }
@@ -222,7 +188,6 @@ resource "google_cloud_run_v2_service" "worker" {
     }
   }
   depends_on = [
-    google_project_service.apis,
     google_project_iam_member.worker_roles,
     google_secret_manager_secret_iam_member.worker_token,
     google_service_account_iam_member.task_act_as,
@@ -295,7 +260,6 @@ resource "google_cloud_run_v2_service" "receiver" {
     }
   }
   depends_on = [
-    google_project_service.apis,
     google_project_iam_member.receiver_task_manager,
     google_service_account_iam_member.task_act_as,
   ]
@@ -338,7 +302,7 @@ resource "google_cloud_scheduler_job" "reconcile" {
       audience              = local.worker_url
     }
   }
-  depends_on = [google_project_service.apis, google_cloud_run_v2_service_iam_member.worker_invoker]
+  depends_on = [google_cloud_run_v2_service_iam_member.worker_invoker]
 }
 
 resource "google_cloud_run_v2_job" "register_commands" {
@@ -364,7 +328,7 @@ resource "google_cloud_run_v2_job" "register_commands" {
           name = "DISCORD_BOT_TOKEN"
           value_source {
             secret_key_ref {
-              secret  = google_secret_manager_secret.discord_bot_token.secret_id
+              secret  = data.google_secret_manager_secret.discord_bot_token.secret_id
               version = "latest"
             }
           }

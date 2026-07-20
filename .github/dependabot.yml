@@ -16,6 +16,10 @@ updates:
     schedule:
       interval: weekly
   - package-ecosystem: terraform
-    directory: /infra
+    directory: /infra/bootstrap
+    schedule:
+      interval: weekly
+  - package-ecosystem: terraform
+    directory: /infra/application
     schedule:
       interval: weekly

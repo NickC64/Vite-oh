@@ -29,7 +29,7 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
-      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: "1.13.5"
       - name: Build and push immutable image
@@ -42,18 +42,19 @@ jobs:
           docker push "${IMAGE}"
           echo "TF_VAR_container_image=${IMAGE}" >> "${GITHUB_ENV}"
       - name: Apply infrastructure and deploy services
-        working-directory: infra
+        working-directory: infra/application
         env:
           TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
-          TF_VAR_github_repository: ${{ github.repository }}
           TF_VAR_discord_application_id: ${{ vars.DISCORD_APPLICATION_ID }}
           TF_VAR_discord_public_key: ${{ secrets.DISCORD_PUBLIC_KEY }}
           TF_VAR_discord_guild_id: ${{ vars.DISCORD_GUILD_ID }}
           TF_VAR_discord_output_channel_id: ${{ vars.DISCORD_OUTPUT_CHANNEL_ID }}
           TF_VAR_discord_owner_user_id: ${{ vars.DISCORD_OWNER_USER_ID }}
         run: |
-          terraform init -backend-config="bucket=${{ vars.TERRAFORM_STATE_BUCKET }}"
-          terraform apply -auto-approve
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TERRAFORM_STATE_BUCKET }}" \
+            -backend-config="prefix=viteoh/application"
+          terraform apply -input=false -auto-approve
       - name: Register guild commands
         run: |
           gcloud run jobs execute viteoh-register-commands \
