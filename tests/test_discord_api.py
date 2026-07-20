@@ -97,7 +97,9 @@ async def test_validate_output_channel_checks_guild_type_and_permissions() -> No
                     "permission_overwrites": [],
                 },
             )
-        if path.endswith("/guilds/guild/members/@me"):
+        if path.endswith("/users/@me"):
+            return httpx.Response(200, json={"id": "bot"})
+        if path.endswith("/guilds/guild/members/bot"):
             return httpx.Response(
                 200, json={"user": {"id": "bot"}, "roles": ["bot-role"]}
             )

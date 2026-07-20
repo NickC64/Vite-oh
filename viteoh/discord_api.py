@@ -151,7 +151,11 @@ class DiscordClient:
             )
 
         guild = await self._request("GET", f"/guilds/{guild_id}")
-        member = await self._request("GET", f"/guilds/{guild_id}/members/@me")
+        bot_user = await self._request("GET", "/users/@me")
+        bot_user_id = str((bot_user or {}).get("id", ""))
+        if not bot_user_id:
+            raise DiscordAPIError(502, "Discord did not return the bot user ID.")
+        member = await self._request("GET", f"/guilds/{guild_id}/members/{bot_user_id}")
         roles = await self._request("GET", f"/guilds/{guild_id}/roles")
         if not guild or not member or not isinstance(roles, list):
             raise DiscordAPIError(502, "Discord did not return guild permissions.")
@@ -160,7 +164,7 @@ class DiscordClient:
         permissions = _channel_permissions(
             permissions,
             guild_id,
-            str((member.get("user") or {}).get("id", "")),
+            bot_user_id,
             {str(role_id) for role_id in member.get("roles", [])},
             channel.get("permission_overwrites") or [],
         )
