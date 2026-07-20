@@ -1,20 +1,12 @@
 # Bot Commands
 
-**Available Commands:**
+- `/new <name>` — Propose a new member. The proposal passes after 48 hours
+  unless anonymously vetoed.
+- `/sub` — Subscribe to notifications about new proposals.
+- `/unsub` — Stop notifications about new proposals.
+- `/view` — View active proposals and their deadlines.
+- `/help` — Display command help.
+- `/delete <name>` — Owner-only proposal deletion.
 
-1. `/new <name>` - Propose a new member  
-   Creates a new member proposal that will pass after 48 hours unless vetoed.
-
-2. `/sub` - Subscribe to new proposal notifications  
-   You'll receive a DM whenever a new proposal is created.
-
-3. `/unsub` - Unsubscribe from new proposal notifications  
-   Stop receiving DMs about new proposals.
-
-4. `/view` - View all current active proposals  
-
-5. `/help` - Display this help message  
-
-**Additional Features:**
-- Use the "Veto" button on a proposal message to veto it.
-- Use the "Subscribe" button on a proposal message to receive updates about that specific proposal.
+Use **Veto** on a proposal message to veto anonymously. Use **Subscribe** to
+receive updates about that specific proposal.

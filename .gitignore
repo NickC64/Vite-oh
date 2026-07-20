@@ -4,3 +4,11 @@
 .idea
 __pycache__/
 *.pyc
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
