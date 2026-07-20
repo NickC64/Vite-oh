@@ -1,7 +1,8 @@
 # Vite-oh
 
-Vite-oh is a single-server Discord bot for anonymous veto voting. A proposal
-passes at a fixed deadline unless a server member anonymously vetoes it.
+Vite-oh is a multi-server Discord bot for anonymous veto voting. Each server
+chooses its announcement channel and voting duration. A proposal passes at its
+fixed deadline unless a server member anonymously vetoes it.
 
 This version uses Discord's HTTP Interaction Endpoint instead of a Gateway
 WebSocket. It is stateless on Cloud Run: Firestore owns proposal state, Cloud
@@ -31,10 +32,11 @@ with a Google-signed OIDC token, and Cloud Run IAM rejects every other caller.
 
 ## Commands
 
-- `/new <name>` creates a 48-hour proposal.
+- `/setup [channel] [duration_minutes]` configures a server or shows its setup.
+- `/new <name>` creates a proposal using that server's configured duration.
 - `/sub` and `/unsub` control notifications for new proposals.
 - `/view` lists active proposals and their deadlines.
-- `/delete <name>` deletes a proposal and is restricted to the configured owner.
+- `/delete <name>` requires Manage Server permission (or the bot-owner override).
 - `/help` shows command help.
 
 Proposal messages provide **Veto** and **Subscribe** buttons. Veto confirmation
@@ -93,8 +95,6 @@ Variables:
 - `GCP_DEPLOYER_SERVICE_ACCOUNT` from the bootstrap output
 - `TERRAFORM_STATE_BUCKET`
 - `DISCORD_APPLICATION_ID`
-- `DISCORD_GUILD_ID`
-- `DISCORD_OUTPUT_CHANNEL_ID`
 - `DISCORD_OWNER_USER_ID`
 
 Secret:
@@ -112,8 +112,8 @@ ensuring the bot token never enters source control, Terraform state, or GitHub.
 
 1. Finish or close active proposals in the legacy SQLite bot. This release
    intentionally starts with an empty Firestore database.
-2. Let the production workflow deploy and register the guild commands.
-3. Confirm the interaction endpoint responds to `/healthz`.
+2. Let the production workflow deploy and register the global commands.
+3. Confirm the interaction endpoint responds to `/health`.
 4. Get the deployed endpoint:
 
    ```bash
@@ -123,8 +123,30 @@ ensuring the bot token never enters source control, Terraform state, or GitHub.
    Copy it to the Discord Developer Portal's **Interactions Endpoint URL**.
    Discord will validate its signature and PING handling.
 5. Stop the old Gateway/WebSocket process.
-6. Smoke-test `/help`, `/sub`, `/new`, Veto, Subscribe, `/view`, and the
-   owner-only `/delete`.
+6. Install the same application in each server with the `bot` and
+   `applications.commands` scopes.
+7. Run `/setup channel:#test-output duration_minutes:1` in the test server and
+   `/setup channel:#live-output duration_minutes:2880` in the live server.
+8. Smoke-test `/help`, `/sub`, `/new`, Veto, Subscribe, `/view`, and `/delete`
+   independently in both servers.
+
+The bot remains shown as offline because it uses HTTP interactions rather than
+a Discord Gateway connection. Global command changes can take time to appear.
+
+## Disposable single-guild cleanup
+
+Before the first multi-guild deployment, remove the old test fixtures once:
+
+```bash
+export GOOGLE_CLOUD_PROJECT=mail-in-votes
+export GOOGLE_CLOUD_LOCATION=northamerica-northeast1
+scripts/cleanup-legacy.sh OLD_GUILD_ID OLD_CHANNEL_ID
+```
+
+The guarded command pauses the deadline queue and reconciliation, deletes old
+proposal state, messages, tasks, and guild-scoped commands, and leaves timers
+paused. Deploy, configure the guilds, then run the two resume commands printed
+by the script. Do not use this cleanup after live multi-guild data exists.
 
 After Firestore receives live data, recover by rolling forward. The legacy
 SQLite bot cannot consume the new state safely.

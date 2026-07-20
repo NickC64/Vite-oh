@@ -69,8 +69,8 @@ def create_app(
         lifespan=lifespan,
     )
 
-    @application.get("/healthz")
-    async def healthz() -> dict[str, str]:
+    @application.get("/health")
+    async def health() -> dict[str, str]:
         return {"status": "ok", "role": settings.service_role}
 
     if settings.service_role == "receiver":

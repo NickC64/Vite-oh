@@ -21,12 +21,9 @@ class Settings(BaseSettings):
     discord_application_id: str = ""
     discord_public_key: str = ""
     discord_bot_token: str = ""
-    discord_guild_id: str = ""
-    discord_output_channel_id: str = ""
     discord_owner_user_id: str = ""
     discord_api_base_url: str = "https://discord.com/api/v10"
 
-    proposal_timeout_seconds: int = Field(default=172800, ge=1)
     signature_max_age_seconds: int = Field(default=300, ge=30, le=900)
 
 

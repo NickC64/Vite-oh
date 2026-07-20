@@ -23,21 +23,8 @@ variable "discord_public_key" {
   sensitive = true
 }
 
-variable "discord_guild_id" {
-  type = string
-}
-
-variable "discord_output_channel_id" {
-  type = string
-}
-
 variable "discord_owner_user_id" {
   type = string
-}
-
-variable "proposal_timeout_seconds" {
-  type    = number
-  default = 172800
 }
 
 variable "notification_channels" {

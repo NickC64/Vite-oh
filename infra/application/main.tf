@@ -147,20 +147,8 @@ resource "google_cloud_run_v2_service" "worker" {
         value = var.discord_application_id
       }
       env {
-        name  = "DISCORD_GUILD_ID"
-        value = var.discord_guild_id
-      }
-      env {
-        name  = "DISCORD_OUTPUT_CHANNEL_ID"
-        value = var.discord_output_channel_id
-      }
-      env {
         name  = "DISCORD_OWNER_USER_ID"
         value = var.discord_owner_user_id
-      }
-      env {
-        name  = "PROPOSAL_TIMEOUT_SECONDS"
-        value = tostring(var.proposal_timeout_seconds)
       }
       env {
         name  = "TASK_INVOKER_SERVICE_ACCOUNT"
@@ -181,7 +169,7 @@ resource "google_cloud_run_v2_service" "worker" {
         period_seconds        = 3
         failure_threshold     = 10
         http_get {
-          path = "/healthz"
+          path = "/health"
           port = 8080
         }
       }
@@ -243,17 +231,13 @@ resource "google_cloud_run_v2_service" "receiver" {
         name  = "DISCORD_PUBLIC_KEY"
         value = var.discord_public_key
       }
-      env {
-        name  = "DISCORD_GUILD_ID"
-        value = var.discord_guild_id
-      }
       startup_probe {
         initial_delay_seconds = 0
         timeout_seconds       = 2
         period_seconds        = 3
         failure_threshold     = 10
         http_get {
-          path = "/healthz"
+          path = "/health"
           port = 8080
         }
       }
@@ -319,10 +303,6 @@ resource "google_cloud_run_v2_job" "register_commands" {
         env {
           name  = "DISCORD_APPLICATION_ID"
           value = var.discord_application_id
-        }
-        env {
-          name  = "DISCORD_GUILD_ID"
-          value = var.discord_guild_id
         }
         env {
           name = "DISCORD_BOT_TOKEN"

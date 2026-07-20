@@ -9,13 +9,12 @@ Interaction Endpoint URL.
 2. Confirm `viteoh-interactions` has one minimum instance and the worker has
    zero minimum instances.
 3. Confirm the worker rejects an unauthenticated request to `/tasks/reconcile`.
-4. Execute the command-registration job and confirm all six guild commands.
+4. Execute the command-registration job and confirm all seven global commands.
 5. Confirm the Scheduler job can invoke reconciliation successfully.
 
 ## Short deadline smoke test
 
-Temporarily set `proposal_timeout_seconds = 60` in the production Terraform
-variables, apply, and wait for both Cloud Run revisions to become ready.
+Run `/setup channel:#test-output duration_minutes:1` in the testing guild.
 
 1. Create a proposal and confirm the public announcement contains a deadline.
 2. Subscribe from another member and confirm a DM arrives.
@@ -29,8 +28,8 @@ variables, apply, and wait for both Cloud Run revisions to become ready.
    message contains no vetoing identity.
 8. Attempt a veto after expiry and confirm it is rejected.
 
-Restore `proposal_timeout_seconds = 172800`, apply Terraform, and verify both
-services are ready before creating real proposals.
+Run `/setup channel:#live-output duration_minutes:2880` in the live guild. A
+later setup change affects only proposals created afterward.
 
 ## Discord cutover
 
@@ -39,8 +38,10 @@ services are ready before creating real proposals.
    Discord Interaction Endpoint URL.
 3. Confirm Discord accepts its signed PING validation.
 4. Stop the old Gateway process.
-5. Exercise `/help`, `/sub`, `/unsub`, `/new`, `/view`, Subscribe, Veto, and
-   owner `/delete`.
+5. Install the same application in every guild using the `bot` and
+   `applications.commands` scopes.
+6. Exercise `/help`, `/setup`, `/sub`, `/unsub`, `/new`, `/view`, Subscribe,
+   Veto, and `/delete` independently in test and live guilds.
 
 ## Recovery
 

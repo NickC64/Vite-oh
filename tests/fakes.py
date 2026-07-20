@@ -5,6 +5,7 @@ from typing import Any
 
 from viteoh.domain import (
     CreateProposalResult,
+    GuildConfig,
     Proposal,
     ProposalStatus,
     TransitionResult,
@@ -15,16 +16,45 @@ from viteoh.repository import reservation_id
 class FakeRepository:
     def __init__(self) -> None:
         self.proposals: dict[str, Proposal] = {}
+        self.guilds: dict[str, GuildConfig] = {}
         self.interactions: dict[str, str] = {}
-        self.global_users: set[str] = set()
+        self.guild_users: dict[str, set[str]] = {}
         self.subscribers: dict[str, set[str]] = {}
         self.delivered: set[tuple[str, str, str]] = set()
         self.lock = asyncio.Lock()
         self.next_id = "12345678-1234-1234-1234-123456789abc"
 
+    async def get_guild_config(self, guild_id: str) -> GuildConfig | None:
+        return self.guilds.get(guild_id)
+
+    async def set_guild_config(
+        self,
+        guild_id: str,
+        guild_name: str,
+        output_channel_id: str,
+        proposal_timeout_seconds: int,
+        configured_by: str,
+        now: datetime,
+    ) -> GuildConfig:
+        previous = self.guilds.get(guild_id)
+        config = GuildConfig(
+            guild_id=guild_id,
+            guild_name=guild_name,
+            output_channel_id=output_channel_id,
+            proposal_timeout_seconds=proposal_timeout_seconds,
+            configured_by=configured_by,
+            created_at=previous.created_at if previous else now,
+            updated_at=now,
+        )
+        self.guilds[guild_id] = config
+        return config
+
     async def create_proposal(
         self,
         interaction_id: str,
+        guild_id: str,
+        guild_name: str,
+        output_channel_id: str,
         display_name: str,
         normalized_name: str,
         created_at: datetime,
@@ -37,15 +67,19 @@ class FakeRepository:
                 )
             if any(
                 item.status is ProposalStatus.ACTIVE
+                and item.guild_id == guild_id
                 and item.normalized_name == normalized_name
                 for item in self.proposals.values()
             ):
                 return CreateProposalResult(None, True)
             proposal = Proposal(
                 id=self.next_id,
+                guild_id=guild_id,
+                guild_name=guild_name,
+                output_channel_id=output_channel_id,
                 display_name=display_name,
                 normalized_name=normalized_name,
-                reservation_id=reservation_id(normalized_name),
+                reservation_id=reservation_id(guild_id, normalized_name),
                 status=ProposalStatus.ACTIVE,
                 created_at=created_at,
                 deadline_at=deadline_at,
@@ -57,11 +91,12 @@ class FakeRepository:
     async def get_proposal(self, proposal_id: str) -> Proposal | None:
         return self.proposals.get(proposal_id)
 
-    async def list_active(self) -> list[Proposal]:
+    async def list_active(self, guild_id: str | None = None) -> list[Proposal]:
         return [
             proposal
             for proposal in self.proposals.values()
             if proposal.status is ProposalStatus.ACTIVE
+            and (guild_id is None or proposal.guild_id == guild_id)
         ]
 
     async def list_pending_terminal_effects(self) -> list[Proposal]:
@@ -110,16 +145,19 @@ class FakeRepository:
             self.proposals[proposal_id] = updated
             return TransitionResult(updated, True, "transitioned")
 
-    async def set_global_subscription(self, user_id: str, enabled: bool) -> bool:
-        before = user_id in self.global_users
+    async def set_guild_subscription(
+        self, guild_id: str, user_id: str, enabled: bool
+    ) -> bool:
+        users = self.guild_users.setdefault(guild_id, set())
+        before = user_id in users
         if enabled:
-            self.global_users.add(user_id)
+            users.add(user_id)
         else:
-            self.global_users.discard(user_id)
+            users.discard(user_id)
         return before != enabled
 
-    async def global_subscribers(self) -> list[str]:
-        return sorted(self.global_users)
+    async def guild_subscribers(self, guild_id: str) -> list[str]:
+        return sorted(self.guild_users.get(guild_id, set()))
 
     async def add_proposal_subscription(self, proposal_id: str, user_id: str) -> bool:
         users = self.subscribers.setdefault(proposal_id, set())
@@ -190,6 +228,10 @@ class FakeDiscord:
         self.announcements: list[Proposal] = []
         self.synced: list[Proposal] = []
         self.dms: list[tuple[str, str]] = []
+        self.channels: dict[str, tuple[str, str]] = {
+            "channel": ("guild", "Test Guild"),
+            "channel-2": ("guild-2", "Second Guild"),
+        }
 
     async def edit_interaction_response(self, token: str, content: str) -> None:
         self.responses.append(content)
@@ -200,6 +242,16 @@ class FakeDiscord:
 
     async def sync_terminal_announcement(self, proposal: Proposal) -> None:
         self.synced.append(proposal)
+
+    async def validate_output_channel(self, guild_id: str, channel_id: str) -> str:
+        channel = self.channels.get(channel_id)
+        if not channel or channel[0] != guild_id:
+            from viteoh.discord_api import DiscordAPIError
+
+            raise DiscordAPIError(
+                400, "The selected channel must belong to this server."
+            )
+        return channel[1]
 
     async def send_dm(self, user_id: str, content: str, *, event_key: str) -> None:
         self.dms.append((user_id, content))

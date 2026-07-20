@@ -15,10 +15,7 @@ from viteoh.security import SignatureVerifier
 def receiver() -> tuple[InteractionReceiver, SigningKey, FakeTasks]:
     key = SigningKey.generate()
     tasks = FakeTasks()
-    settings = Settings(
-        discord_public_key=key.verify_key.encode().hex(),
-        discord_guild_id="guild",
-    )
+    settings = Settings(discord_public_key=key.verify_key.encode().hex())
     return (
         InteractionReceiver(
             settings, SignatureVerifier(settings.discord_public_key), tasks
@@ -82,10 +79,10 @@ async def test_veto_prompts_without_worker(
     assert not tasks.interactions
 
 
-async def test_wrong_guild_is_rejected(
+async def test_another_guild_is_accepted(
     receiver: tuple[InteractionReceiver, SigningKey, FakeTasks],
 ) -> None:
-    service, key, _ = receiver
+    service, key, tasks = receiver
     _, response = await signed_receive(
         service,
         key,
@@ -97,4 +94,5 @@ async def test_wrong_guild_is_rejected(
             "data": {"name": "view"},
         },
     )
-    assert "not available" in response["data"]["content"]
+    assert response["type"] == 5
+    assert tasks.interactions[-1]["guild_id"] == "other"

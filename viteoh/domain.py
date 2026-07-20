@@ -12,8 +12,34 @@ class ProposalStatus(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class GuildConfig:
+    guild_id: str
+    guild_name: str
+    output_channel_id: str
+    proposal_timeout_seconds: int
+    configured_by: str
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_document(cls, document_id: str, data: dict[str, Any]) -> "GuildConfig":
+        return cls(
+            guild_id=document_id,
+            guild_name=data["guild_name"],
+            output_channel_id=data["output_channel_id"],
+            proposal_timeout_seconds=int(data["proposal_timeout_seconds"]),
+            configured_by=data["configured_by"],
+            created_at=_utc(data["created_at"]),
+            updated_at=_utc(data["updated_at"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Proposal:
     id: str
+    guild_id: str
+    guild_name: str
+    output_channel_id: str
     display_name: str
     normalized_name: str
     reservation_id: str
@@ -31,6 +57,9 @@ class Proposal:
     def from_document(cls, document_id: str, data: dict[str, Any]) -> "Proposal":
         return cls(
             id=document_id,
+            guild_id=data["guild_id"],
+            guild_name=data["guild_name"],
+            output_channel_id=data["output_channel_id"],
             display_name=data["display_name"],
             normalized_name=data["normalized_name"],
             reservation_id=data["reservation_id"],

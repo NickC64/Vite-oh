@@ -39,10 +39,10 @@ class InteractionReceiver:
             return 400, {"detail": "invalid JSON"}
         if payload.get("type") == 1:
             return 200, {"type": 1}
-        if str(payload.get("guild_id", "")) != self.settings.discord_guild_id:
-            return 200, _message("This bot is not available in this server.")
-        if not ((payload.get("member") or {}).get("user")):
-            return 200, _message("You must be a member of the configured server.")
+        if not payload.get("guild_id") or not (
+            (payload.get("member") or {}).get("user")
+        ):
+            return 200, _message("This bot can only be used inside a server.")
 
         data = payload.get("data") or {}
         if payload.get("type") == 2 and data.get("name") == "help":

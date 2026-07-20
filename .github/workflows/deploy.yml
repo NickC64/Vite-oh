@@ -47,15 +47,13 @@ jobs:
           TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
           TF_VAR_discord_application_id: ${{ vars.DISCORD_APPLICATION_ID }}
           TF_VAR_discord_public_key: ${{ secrets.DISCORD_PUBLIC_KEY }}
-          TF_VAR_discord_guild_id: ${{ vars.DISCORD_GUILD_ID }}
-          TF_VAR_discord_output_channel_id: ${{ vars.DISCORD_OUTPUT_CHANNEL_ID }}
           TF_VAR_discord_owner_user_id: ${{ vars.DISCORD_OWNER_USER_ID }}
         run: |
           terraform init -input=false \
             -backend-config="bucket=${{ vars.TERRAFORM_STATE_BUCKET }}" \
             -backend-config="prefix=viteoh/application"
           terraform apply -input=false -auto-approve
-      - name: Register guild commands
+      - name: Register global commands
         run: |
           gcloud run jobs execute viteoh-register-commands \
             --project "${{ vars.GCP_PROJECT_ID }}" \

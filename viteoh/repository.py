@@ -11,6 +11,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 
 from viteoh.domain import (
     CreateProposalResult,
+    GuildConfig,
     Proposal,
     ProposalStatus,
     TransitionResult,
@@ -24,14 +25,29 @@ def normalize_name(value: str) -> str:
     return normalized
 
 
-def reservation_id(normalized_name: str) -> str:
-    return hashlib.sha256(normalized_name.encode()).hexdigest()
+def reservation_id(guild_id: str, normalized_name: str) -> str:
+    return hashlib.sha256(f"{guild_id}\0{normalized_name}".encode()).hexdigest()
 
 
 class Repository(Protocol):
+    async def get_guild_config(self, guild_id: str) -> GuildConfig | None: ...
+
+    async def set_guild_config(
+        self,
+        guild_id: str,
+        guild_name: str,
+        output_channel_id: str,
+        proposal_timeout_seconds: int,
+        configured_by: str,
+        now: datetime,
+    ) -> GuildConfig: ...
+
     async def create_proposal(
         self,
         interaction_id: str,
+        guild_id: str,
+        guild_name: str,
+        output_channel_id: str,
         display_name: str,
         normalized_name: str,
         created_at: datetime,
@@ -40,7 +56,7 @@ class Repository(Protocol):
 
     async def get_proposal(self, proposal_id: str) -> Proposal | None: ...
 
-    async def list_active(self) -> Sequence[Proposal]: ...
+    async def list_active(self, guild_id: str | None = None) -> Sequence[Proposal]: ...
 
     async def list_pending_terminal_effects(self) -> Sequence[Proposal]: ...
 
@@ -59,9 +75,11 @@ class Repository(Protocol):
         now: datetime,
     ) -> TransitionResult: ...
 
-    async def set_global_subscription(self, user_id: str, enabled: bool) -> bool: ...
+    async def set_guild_subscription(
+        self, guild_id: str, user_id: str, enabled: bool
+    ) -> bool: ...
 
-    async def global_subscribers(self) -> Sequence[str]: ...
+    async def guild_subscribers(self, guild_id: str) -> Sequence[str]: ...
 
     async def add_proposal_subscription(
         self, proposal_id: str, user_id: str
@@ -86,16 +104,49 @@ class FirestoreRepository:
     def __init__(self, client: firestore.AsyncClient) -> None:
         self.client = client
 
+    async def get_guild_config(self, guild_id: str) -> GuildConfig | None:
+        snapshot = await self.client.collection("guilds").document(guild_id).get()
+        if not snapshot.exists:
+            return None
+        return GuildConfig.from_document(snapshot.id, snapshot.to_dict() or {})
+
+    async def set_guild_config(
+        self,
+        guild_id: str,
+        guild_name: str,
+        output_channel_id: str,
+        proposal_timeout_seconds: int,
+        configured_by: str,
+        now: datetime,
+    ) -> GuildConfig:
+        ref = self.client.collection("guilds").document(guild_id)
+        previous = await ref.get()
+        previous_data = previous.to_dict() or {}
+        created_at = previous_data.get("created_at", now)
+        data = {
+            "guild_name": guild_name,
+            "output_channel_id": output_channel_id,
+            "proposal_timeout_seconds": proposal_timeout_seconds,
+            "configured_by": configured_by,
+            "created_at": created_at,
+            "updated_at": now,
+        }
+        await ref.set(data)
+        return GuildConfig.from_document(guild_id, data)
+
     async def create_proposal(
         self,
         interaction_id: str,
+        guild_id: str,
+        guild_name: str,
+        output_channel_id: str,
         display_name: str,
         normalized_name: str,
         created_at: datetime,
         deadline_at: datetime,
     ) -> CreateProposalResult:
         proposal_id = str(uuid.uuid4())
-        reserve_id = reservation_id(normalized_name)
+        reserve_id = reservation_id(guild_id, normalized_name)
         proposal_ref = self.client.collection("proposals").document(proposal_id)
         reservation_ref = self.client.collection("active_names").document(reserve_id)
         interaction_ref = self.client.collection("interactions").document(
@@ -136,6 +187,9 @@ class FirestoreRepository:
                 return CreateProposalResult(None, True)
 
             proposal_data = {
+                "guild_id": guild_id,
+                "guild_name": guild_name,
+                "output_channel_id": output_channel_id,
                 "display_name": display_name,
                 "normalized_name": normalized_name,
                 "reservation_id": reserve_id,
@@ -154,6 +208,7 @@ class FirestoreRepository:
                 reservation_ref,
                 {
                     "proposal_id": proposal_id,
+                    "guild_id": guild_id,
                     "normalized_name": normalized_name,
                     "created_at": created_at,
                 },
@@ -162,6 +217,7 @@ class FirestoreRepository:
                 interaction_ref,
                 {
                     "kind": "new",
+                    "guild_id": guild_id,
                     "proposal_id": proposal_id,
                     "processed_at": created_at,
                 },
@@ -178,10 +234,12 @@ class FirestoreRepository:
             return None
         return Proposal.from_document(snapshot.id, snapshot.to_dict() or {})
 
-    async def list_active(self) -> Sequence[Proposal]:
+    async def list_active(self, guild_id: str | None = None) -> Sequence[Proposal]:
         query = self.client.collection("proposals").where(
             filter=FieldFilter("status", "==", ProposalStatus.ACTIVE.value)
         )
+        if guild_id is not None:
+            query = query.where(filter=FieldFilter("guild_id", "==", guild_id))
         return [
             Proposal.from_document(snapshot.id, snapshot.to_dict() or {})
             async for snapshot in query.stream()
@@ -262,24 +320,33 @@ class FirestoreRepository:
 
         return await transition_in_transaction(transaction)
 
-    async def set_global_subscription(self, user_id: str, enabled: bool) -> bool:
-        ref = self.client.collection("users").document(user_id)
-        previous = await ref.get()
-        was_enabled = bool(
-            previous.exists and (previous.to_dict() or {}).get("subscribed_to_all")
+    async def set_guild_subscription(
+        self, guild_id: str, user_id: str, enabled: bool
+    ) -> bool:
+        ref = (
+            self.client.collection("guilds")
+            .document(guild_id)
+            .collection("subscribers")
+            .document(user_id)
         )
+        previous = await ref.get()
+        was_enabled = bool(previous.exists)
+        if not enabled:
+            if previous.exists:
+                await ref.delete()
+            return was_enabled
         await ref.set(
             {
-                "subscribed_to_all": enabled,
                 "updated_at": firestore.SERVER_TIMESTAMP,
-            },
-            merge=True,
+            }
         )
-        return was_enabled != enabled
+        return not was_enabled
 
-    async def global_subscribers(self) -> Sequence[str]:
-        query = self.client.collection("users").where(
-            filter=FieldFilter("subscribed_to_all", "==", True)
+    async def guild_subscribers(self, guild_id: str) -> Sequence[str]:
+        query = (
+            self.client.collection("guilds")
+            .document(guild_id)
+            .collection("subscribers")
         )
         return [snapshot.id async for snapshot in query.stream()]
 

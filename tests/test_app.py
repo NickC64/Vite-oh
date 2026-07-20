@@ -39,7 +39,7 @@ def test_receiver_app_routes() -> None:
         receiver=StubReceiver(),  # type: ignore[arg-type]
     )
     with TestClient(app) as client:
-        assert client.get("/healthz").json()["role"] == "receiver"
+        assert client.get("/health").json()["role"] == "receiver"
         response = client.post("/interactions", json={"type": 1})
         assert response.status_code == 200
         assert response.json()["type"] == 1
@@ -53,7 +53,7 @@ def test_worker_app_routes() -> None:
         processor=processor,  # type: ignore[arg-type]
     )
     with TestClient(app) as client:
-        assert client.get("/healthz").json()["role"] == "worker"
+        assert client.get("/health").json()["role"] == "worker"
         assert client.post("/tasks/interactions", json={"id": "1"}).status_code == 204
         assert processor.payloads == [{"id": "1"}]
         assert client.post("/tasks/proposals/p1/finalize").json() == {
