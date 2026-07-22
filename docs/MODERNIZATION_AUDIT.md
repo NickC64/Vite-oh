@@ -19,6 +19,8 @@ Audit date: 2026-07-20
 | Deferred Discord response followed by a second initial response | Invalid Discord interaction lifecycle | Immediate defer followed by webhook edit |
 | Channel lookup by name | Renames silently break announcements | Immutable Discord channel ID |
 | Reused static component IDs | No stateless proposal routing | Proposal UUID encoded in each component ID |
+| Flat, abbreviated command list | Poor discoverability as features grew | One nested `/proposal` command family |
+| Plain edited announcements | Outcomes were easy to miss | Rich canonical embeds plus one terminal reply |
 | GitHub Actions v3 and Black-only CI | Old runtime and no behavioral/security checks | Current pinned actions, Ruff, mypy, pytest, audit, Terraform, and container checks |
 | Bootstrap and runtime resources in one Terraform state | CI had to administer the identity provider and APIs it depended on | Administrator-owned bootstrap state plus CI-owned application state |
 | No tests | Timer and concurrency regressions were invisible | State-machine, interaction, REST adapter, and task tests |

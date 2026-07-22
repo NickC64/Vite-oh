@@ -21,6 +21,6 @@ def test_signature_verification_and_expiry() -> None:
 
 def test_component_round_trip_and_rejection() -> None:
     proposal_id = "12345678-1234-1234-1234-123456789abc"
-    value = component_id("confirm-veto", proposal_id)
-    assert parse_component_id(value) == ("confirm-veto", proposal_id)
+    value = component_id("proposal", "confirm-veto", proposal_id)
+    assert parse_component_id(value) == ("proposal", "confirm-veto", proposal_id)
     assert parse_component_id("veto") is None

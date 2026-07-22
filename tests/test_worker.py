@@ -44,10 +44,68 @@ def command(
     permissions: int = 0,
     options: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
-    command_options = options
-    if command_options is None:
-        option_name = "title" if name == "new" else "proposal"
-        command_options = [{"name": option_name, "value": value}] if value else []
+    if name == "new":
+        values = {str(item["name"]): item.get("value", "") for item in options or []}
+        return {
+            "id": interaction_id,
+            "type": 5,
+            "token": "token",
+            "guild_id": guild_id,
+            "member": {
+                "user": {"id": user_id},
+                "permissions": str(permissions),
+            },
+            "data": {
+                "custom_id": "proposal-create|builtin:general",
+                "components": [
+                    {
+                        "components": [
+                            {
+                                "custom_id": "subject",
+                                "value": str(values.get("title", value)),
+                            }
+                        ]
+                    },
+                    {
+                        "components": [
+                            {
+                                "custom_id": "context",
+                                "value": str(values.get("context", "")),
+                            }
+                        ]
+                    },
+                ],
+            },
+        }
+    if name == "delete":
+        return {
+            "id": interaction_id,
+            "type": 3,
+            "token": "token",
+            "guild_id": guild_id,
+            "member": {
+                "user": {"id": user_id},
+                "permissions": str(permissions),
+            },
+            "data": {"custom_id": component_id("proposal", "confirm-delete", value)},
+        }
+    path = {
+        "setup": "configure",
+        "view": "list",
+        "nudge": "nudge",
+        "sub": "preferences",
+        "unsub": "preferences",
+        "nudges": "preferences",
+    }.get(name, name)
+    command_options = list(options or [])
+    if name == "sub":
+        command_options = [{"name": "new_proposals", "value": True}]
+    elif name == "unsub":
+        command_options = [{"name": "new_proposals", "value": False}]
+    elif name == "nudges":
+        command_options = [
+            {"name": "nudges", "value": item.get("value")} for item in command_options
+        ]
     return {
         "id": interaction_id,
         "type": 2,
@@ -57,7 +115,10 @@ def command(
             "user": {"id": user_id},
             "permissions": str(permissions),
         },
-        "data": {"name": name, "options": command_options},
+        "data": {
+            "name": "proposal",
+            "options": [{"name": path, "type": 1, "options": command_options}],
+        },
     }
 
 
@@ -84,8 +145,8 @@ async def test_subscriptions_and_view(
     processor, _, _, discord = system
     await processor.process(command("sub"))
     await processor.process(command("sub", interaction_id="2"))
-    assert "subscribed" in discord.responses[0]
-    assert "already" in discord.responses[1]
+    assert "New proposal DMs: **on**" in discord.responses[0]
+    assert "New proposal DMs: **on**" in discord.responses[1]
     await processor.process(command("view", interaction_id="3"))
     assert discord.responses[-1] == "There are no active proposals."
 
@@ -107,6 +168,7 @@ async def test_timer_cannot_pass_early_and_passes_once(
     assert repository.proposals[proposal.id].status is ProposalStatus.PASSED
     assert await processor.finalize(proposal.id) == "already_terminal"
     assert len(discord.synced) == 1
+    assert len(discord.outcomes) == 1
 
 
 async def test_veto_wins_before_deadline_and_is_anonymous(
@@ -121,7 +183,7 @@ async def test_veto_wins_before_deadline_and_is_anonymous(
         "token": "token",
         "guild_id": "guild",
         "member": {"user": {"id": "vetoing-user"}},
-        "data": {"custom_id": component_id("confirm-veto", proposal.id)},
+        "data": {"custom_id": component_id("proposal", "confirm-veto", proposal.id)},
     }
     await processor.process(payload)
     assert repository.proposals[proposal.id].status is ProposalStatus.VETOED
@@ -224,7 +286,7 @@ async def test_unconfigured_guild_is_rejected_and_guilds_are_isolated(
 ) -> None:
     processor, repository, _, discord = system
     await processor.process(command("new", guild_id="guild-2", value="Alice"))
-    assert "not been configured" in discord.responses[-1]
+    assert "no longer configured" in discord.responses[-1]
     now = utcnow()
     repository.guilds["guild-2"] = GuildConfig(
         guild_id="guild-2",
@@ -259,7 +321,9 @@ async def test_copied_component_cannot_cross_guild(
             "token": "token",
             "guild_id": "guild-2",
             "member": {"user": {"id": "user"}},
-            "data": {"custom_id": component_id("confirm-veto", proposal.id)},
+            "data": {
+                "custom_id": component_id("proposal", "confirm-veto", proposal.id)
+            },
         }
     )
     assert proposal.status is ProposalStatus.ACTIVE
@@ -288,7 +352,7 @@ async def test_generalized_proposal_context_and_acknowledgement(
         "token": "token",
         "guild_id": "guild",
         "member": {"user": {"id": "reviewer"}},
-        "data": {"custom_id": component_id("acknowledge", proposal.id)},
+        "data": {"custom_id": component_id("proposal", "acknowledge", proposal.id)},
     }
     await processor.process(payload)
     await processor.process(payload)
@@ -377,7 +441,7 @@ async def test_nudge_rejects_self_bots_forged_ids_and_limit(
             value="not-a-uuid",
         )
     )
-    assert "valid active proposal" in discord.responses[-1]
+    assert "no longer valid" in discord.responses[-1]
     repository.proposals[proposal.id] = replace(proposal, nudge_count=10)
     await processor.process(
         command(
@@ -428,7 +492,7 @@ async def test_acknowledgement_at_deadline_is_rejected(
             "token": "token",
             "guild_id": "guild",
             "member": {"user": {"id": "reviewer"}},
-            "data": {"custom_id": component_id("acknowledge", proposal.id)},
+            "data": {"custom_id": component_id("proposal", "acknowledge", proposal.id)},
         }
     )
     assert repository.proposals[proposal.id].acknowledgement_count == 0
@@ -444,7 +508,7 @@ async def test_announcement_rendering_converges_when_finalize_races_ack(
     original_sync = discord.sync_proposal_announcement
     raced = False
 
-    async def racing_sync(current: object) -> None:
+    async def racing_sync(current: object) -> str:
         nonlocal raced
         assert hasattr(current, "status")
         if not raced:
@@ -452,7 +516,7 @@ async def test_announcement_rendering_converges_when_finalize_races_ack(
             await repository.transition(
                 proposal.id, ProposalStatus.PASSED, proposal.deadline_at
             )
-        await original_sync(current)  # type: ignore[arg-type]
+        return await original_sync(current)  # type: ignore[arg-type]
 
     discord.sync_proposal_announcement = racing_sync  # type: ignore[method-assign]
     await processor.process(
@@ -462,7 +526,167 @@ async def test_announcement_rendering_converges_when_finalize_races_ack(
             "token": "token",
             "guild_id": "guild",
             "member": {"user": {"id": "reviewer"}},
-            "data": {"custom_id": component_id("acknowledge", proposal.id)},
+            "data": {"custom_id": component_id("proposal", "acknowledge", proposal.id)},
         }
     )
     assert discord.synced[-1].status is ProposalStatus.PASSED
+
+
+async def test_custom_template_modal_creation_and_snapshot(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+) -> None:
+    processor, repository, _, discord = system
+    await processor.process(
+        {
+            "id": "template-create",
+            "type": 5,
+            "token": "token",
+            "guild_id": "guild",
+            "member": {
+                "user": {"id": "admin"},
+                "permissions": str(MANAGE_GUILD),
+            },
+            "data": {
+                "custom_id": "template-create|new|1",
+                "components": [
+                    {"components": [{"custom_id": "name", "value": "Policy"}]},
+                    {
+                        "components": [
+                            {"custom_id": "description", "value": "Change policy"}
+                        ]
+                    },
+                    {
+                        "components": [
+                            {"custom_id": "subject_label", "value": "What changes?"}
+                        ]
+                    },
+                    {"components": [{"custom_id": "context_label", "value": "Why?"}]},
+                    {
+                        "components": [
+                            {
+                                "custom_id": "title_format",
+                                "value": "Adopt {subject} as policy",
+                            }
+                        ]
+                    },
+                ],
+            },
+        }
+    )
+    template = next(iter(repository.templates.values()))
+    assert template.context_required
+    assert "created" in discord.responses[-1]
+
+    await processor.process(
+        {
+            "id": "proposal-create",
+            "type": 5,
+            "token": "token",
+            "guild_id": "guild",
+            "member": {"user": {"id": "user"}},
+            "data": {
+                "custom_id": f"proposal-create|{template.id}",
+                "components": [
+                    {"components": [{"custom_id": "subject", "value": "quiet hours"}]},
+                    {
+                        "components": [
+                            {"custom_id": "context", "value": "Reduce late pings"}
+                        ]
+                    },
+                ],
+            },
+        }
+    )
+    proposal = next(iter(repository.proposals.values()))
+    assert proposal.title == "Adopt quiet hours as policy"
+    assert proposal.template_name == "Policy"
+    await repository.save_template(
+        "guild",
+        template.id,
+        "Rules",
+        "rules",
+        template.description,
+        template.subject_label,
+        template.context_label,
+        template.title_format,
+        False,
+        "admin",
+        utcnow(),
+    )
+    assert repository.proposals[proposal.id].template_name == "Policy"
+
+
+async def test_veto_modal_reason_is_anonymous_public_and_outcome_is_idempotent(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+) -> None:
+    processor, repository, _, discord = system
+    await processor.process(command("new", value="Document rollbacks"))
+    proposal = next(iter(repository.proposals.values()))
+    await processor.process(
+        {
+            "id": "veto",
+            "type": 5,
+            "token": "token",
+            "guild_id": "guild",
+            "member": {"user": {"id": "secret-vetoer"}},
+            "data": {
+                "custom_id": f"proposal-veto|{proposal.id}",
+                "components": [
+                    {
+                        "components": [
+                            {
+                                "custom_id": "reason",
+                                "value": "The rollback plan is incomplete.",
+                            }
+                        ]
+                    }
+                ],
+            },
+        }
+    )
+    terminal = repository.proposals[proposal.id]
+    assert terminal.veto_reason == "The rollback plan is incomplete."
+    assert "secret-vetoer" not in repr(terminal)
+    assert discord.synced[-1].veto_reason
+    assert len(discord.outcomes) == 1
+    await processor.sync_terminal_effects(repository.proposals[proposal.id])
+    assert len(discord.outcomes) == 1
+
+
+async def test_custom_template_delete_confirmation_revalidates_admin(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+) -> None:
+    processor, repository, _, discord = system
+    template = (
+        await repository.save_template(
+            "guild",
+            None,
+            "Policy",
+            "policy",
+            "Change policy",
+            "Subject",
+            "Context",
+            "{subject}",
+            False,
+            "admin",
+            utcnow(),
+        )
+    ).template
+    assert template
+    control = component_id("template", "confirm-delete", template.id)
+    payload = {
+        "id": "delete-template",
+        "type": 3,
+        "token": "token",
+        "guild_id": "guild",
+        "member": {"user": {"id": "user"}, "permissions": "0"},
+        "data": {"custom_id": control},
+    }
+    await processor.process(payload)
+    assert "Manage Server" in discord.responses[-1]
+    payload["member"] = {
+        "user": {"id": "admin"},
+        "permissions": str(MANAGE_GUILD),
+    }
+    await processor.process(payload)
+    assert await repository.get_template("guild", template.id) is None

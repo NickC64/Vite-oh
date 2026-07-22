@@ -32,21 +32,28 @@ with a Google-signed OIDC token, and Cloud Run IAM rejects every other caller.
 
 ## Commands
 
-- `/setup [channel] [duration_minutes]` configures a server or shows its setup.
-- `/new <title> [context]` creates a general proposal using that server's
-  configured duration.
-- `/sub` and `/unsub` control notifications for new proposals.
-- `/view` lists active proposals and their deadlines.
-- `/delete <proposal>` uses autocomplete and requires Manage Server permission
-  (or the bot-owner override).
-- `/nudge <proposal> <user>` anonymously DMs one member about a proposal.
-- `/nudges [enabled]` controls whether that server may nudge you.
-- `/help` shows command help.
+- `/proposal create [template]` opens a guided proposal form. General and New
+  member templates are built in.
+- `/proposal list` links to active proposals and their deadlines.
+- `/proposal nudge <proposal> <user>` anonymously DMs one member.
+- `/proposal preferences [new_proposals] [nudges]` controls per-server DMs.
+- `/proposal configure [channel] [duration_minutes]` configures the server and
+  requires Manage Server permission (or the bot-owner override).
+- `/proposal delete <proposal>` confirms and deletes an active proposal.
+- `/proposal template create|edit|delete|list` manages up to 20 guild-local
+  guided templates. Template mutations require Manage Server permission.
+- `/proposal help` explains the consent model and commands.
 
 Proposal messages provide **Veto**, **Acknowledge**, and **Subscribe** buttons.
 Acknowledgements expose only an aggregate count and never act as yes votes.
-Veto confirmation is ephemeral; the identity of the vetoing member is neither
-stored nor shown.
+Veto opens an ephemeral form for an optional public reason; the vetoing
+identity is neither stored nor shown. Announcements are rich embeds. Terminal
+states update the canonical embed and create one reply so the channel receives
+fresh activity without losing its clean source of truth.
+
+Custom templates guide a subject and context field, optionally require context,
+and format titles with exactly one `{subject}` token. Proposals snapshot the
+template name, so later template edits or deletion never rewrite history.
 
 ## Local development
 
@@ -131,10 +138,12 @@ ensuring the bot token never enters source control, Terraform state, or GitHub.
 5. Stop the old Gateway/WebSocket process.
 6. Install the same application in each server with the `bot` and
    `applications.commands` scopes.
-7. Run `/setup channel:#test-output duration_minutes:1` in the test server and
-   `/setup channel:#live-output duration_minutes:2880` in the live server.
-8. Smoke-test autocomplete, `/new`, `/nudge`, `/nudges`, Acknowledge, Veto,
-   Subscribe, `/view`, and `/delete` independently in both servers.
+7. Run `/proposal configure channel:#test-output duration_minutes:1` in the
+   test server and `/proposal configure channel:#live-output
+   duration_minutes:2880` in the live server.
+8. Smoke-test both built-ins, a custom template, autocomplete, preferences,
+   nudge, acknowledgement, an anonymous veto reason, terminal replies, and
+   deletion independently in both servers.
 
 The bot remains shown as offline because it uses HTTP interactions rather than
 a Discord Gateway connection. Global command changes can take time to appear.
@@ -170,9 +179,12 @@ SQLite bot cannot consume the new state safely.
 - Discord message edits are idempotent. Notification delivery is recorded per
   proposal, event, and subscriber; permanent closed-DM failures do not block a
   proposal transition.
+- Terminal outcome replies use deterministic nonces and durable message IDs;
+  reconciliation retries incomplete canonical or outcome delivery.
 
-Terminal proposal records are retained for audit and idempotency. The vetoing
-user is not part of those records.
+Terminal proposal records, public veto reasons, and template snapshots are
+retained for audit and idempotency. The vetoing user is not part of those
+records.
 
 See the complete [modernization audit](docs/MODERNIZATION_AUDIT.md) and
 [production acceptance runbook](docs/PRODUCTION_ACCEPTANCE.md).

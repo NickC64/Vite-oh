@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -55,13 +56,40 @@ async def test_discord_announcement_edit_response_and_dm() -> None:
     body = json.loads(requests[0].content)
     assert body["enforce_nonce"] is True
     assert body["components"]
+    assert body["embeds"][0]["color"] == 0x5865F2
+    assert body["embeds"][0]["title"] == "Alice"
 
     await client.edit_interaction_response("interaction-token", "Done")
-    await client.sync_proposal_announcement(proposal(ProposalStatus.PASSED))
+    terminal = proposal(ProposalStatus.PASSED)
+    assert await client.sync_proposal_announcement(terminal) == "message"
+    assert await client.create_outcome_reply(terminal) == "message"
     await client.send_dm("user", "Hello", event_key="event")
     assert any(
         request.url.path.endswith("/channels/dm/messages") for request in requests
     )
+    await client.close()
+
+
+async def test_veto_embed_includes_public_reason_without_mentions() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"id": "message"})
+
+    client = DiscordClient(
+        Settings(discord_api_base_url="https://discord.test"),
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    vetoed = proposal(ProposalStatus.VETOED)
+    vetoed = replace(
+        vetoed,
+        veto_reason="Please document the rollback plan, @everyone.",
+    )
+    await client.create_outcome_reply(vetoed)
+    body = json.loads(requests[-1].content)
+    assert "rollback" in body["embeds"][0]["description"]
+    assert body["allowed_mentions"] == {"parse": [], "replied_user": False}
     await client.close()
 
 

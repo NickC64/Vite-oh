@@ -15,8 +15,11 @@ from viteoh.domain import (
     Proposal,
     ProposalActionResult,
     ProposalStatus,
+    ProposalTemplate,
+    TemplateMutationResult,
     TransitionResult,
 )
+from viteoh.templates import BUILTIN_TEMPLATES, MAX_CUSTOM_TEMPLATES, builtin_template
 
 
 def normalize_title(value: str) -> str:
@@ -52,6 +55,8 @@ class Repository(Protocol):
         title: str,
         normalized_title: str,
         context: str,
+        template_id: str,
+        template_name: str,
         created_at: datetime,
         deadline_at: datetime,
     ) -> CreateProposalResult: ...
@@ -70,12 +75,42 @@ class Repository(Protocol):
         self, proposal_id: str, message_id: str
     ) -> Proposal | None: ...
 
+    async def set_outcome_message_id(
+        self, proposal_id: str, message_id: str
+    ) -> Proposal | None: ...
+
     async def transition(
         self,
         proposal_id: str,
         status: ProposalStatus,
         now: datetime,
+        veto_reason: str = "",
     ) -> TransitionResult: ...
+
+    async def get_template(
+        self, guild_id: str, template_id: str
+    ) -> ProposalTemplate | None: ...
+
+    async def list_templates(self, guild_id: str) -> Sequence[ProposalTemplate]: ...
+
+    async def save_template(
+        self,
+        guild_id: str,
+        template_id: str | None,
+        name: str,
+        normalized_name: str,
+        description: str,
+        subject_label: str,
+        context_label: str,
+        title_format: str,
+        context_required: bool,
+        user_id: str,
+        now: datetime,
+    ) -> TemplateMutationResult: ...
+
+    async def delete_template(
+        self, guild_id: str, template_id: str
+    ) -> TemplateMutationResult: ...
 
     async def acknowledge(
         self, proposal_id: str, user_id: str, now: datetime
@@ -98,6 +133,8 @@ class Repository(Protocol):
     async def set_guild_subscription(
         self, guild_id: str, user_id: str, enabled: bool
     ) -> bool: ...
+
+    async def get_guild_subscription(self, guild_id: str, user_id: str) -> bool: ...
 
     async def guild_subscribers(self, guild_id: str) -> Sequence[str]: ...
 
@@ -150,6 +187,7 @@ class FirestoreRepository:
             "configured_by": configured_by,
             "created_at": created_at,
             "updated_at": now,
+            "custom_template_count": int(previous_data.get("custom_template_count", 0)),
         }
         await ref.set(data)
         return GuildConfig.from_document(guild_id, data)
@@ -163,6 +201,8 @@ class FirestoreRepository:
         title: str,
         normalized_title: str,
         context: str,
+        template_id: str,
+        template_name: str,
         created_at: datetime,
         deadline_at: datetime,
     ) -> CreateProposalResult:
@@ -214,6 +254,8 @@ class FirestoreRepository:
                 "title": title,
                 "normalized_title": normalized_title,
                 "context": context,
+                "template_id": template_id,
+                "template_name": template_name,
                 "reservation_id": reserve_id,
                 "status": ProposalStatus.ACTIVE.value,
                 "created_at": created_at,
@@ -227,6 +269,8 @@ class FirestoreRepository:
                 "acknowledgement_count": 0,
                 "nudge_count": 0,
                 "announcement_version": 0,
+                "veto_reason": "",
+                "outcome_message_id": None,
             }
             transaction.create(proposal_ref, proposal_data)
             transaction.create(
@@ -270,6 +314,171 @@ class FirestoreRepository:
             async for snapshot in query.stream()
         ]
 
+    async def get_template(
+        self, guild_id: str, template_id: str
+    ) -> ProposalTemplate | None:
+        builtin = builtin_template(template_id)
+        if builtin:
+            return replace(builtin, guild_id=guild_id)
+        snapshot = await (
+            self.client.collection("guilds")
+            .document(guild_id)
+            .collection("templates")
+            .document(template_id)
+            .get()
+        )
+        if not snapshot.exists:
+            return None
+        return ProposalTemplate.from_document(
+            guild_id, snapshot.id, snapshot.to_dict() or {}
+        )
+
+    async def list_templates(self, guild_id: str) -> Sequence[ProposalTemplate]:
+        custom = [
+            ProposalTemplate.from_document(
+                guild_id, snapshot.id, snapshot.to_dict() or {}
+            )
+            async for snapshot in (
+                self.client.collection("guilds")
+                .document(guild_id)
+                .collection("templates")
+                .stream()
+            )
+        ]
+        return [
+            *(replace(template, guild_id=guild_id) for template in BUILTIN_TEMPLATES),
+            *sorted(custom, key=lambda template: template.normalized_name),
+        ]
+
+    async def save_template(
+        self,
+        guild_id: str,
+        template_id: str | None,
+        name: str,
+        normalized_name: str,
+        description: str,
+        subject_label: str,
+        context_label: str,
+        title_format: str,
+        context_required: bool,
+        user_id: str,
+        now: datetime,
+    ) -> TemplateMutationResult:
+        if template_id and builtin_template(template_id):
+            return TemplateMutationResult(None, False, "builtin")
+        template_id = template_id or str(uuid.uuid4())
+        guild_ref = self.client.collection("guilds").document(guild_id)
+        template_ref = guild_ref.collection("templates").document(template_id)
+        name_id = hashlib.sha256(normalized_name.encode()).hexdigest()
+        name_ref = guild_ref.collection("template_names").document(name_id)
+        transaction = self.client.transaction()
+
+        @firestore.async_transactional
+        async def save_in_transaction(transaction: Any) -> TemplateMutationResult:
+            guild_snapshot = await guild_ref.get(transaction=transaction)
+            existing = await template_ref.get(transaction=transaction)
+            claimed_name = await name_ref.get(transaction=transaction)
+            if not guild_snapshot.exists:
+                return TemplateMutationResult(None, False, "unconfigured")
+            existing_data = existing.to_dict() or {}
+            old_normalized = str(existing_data.get("normalized_name", ""))
+            old_name_ref = (
+                guild_ref.collection("template_names").document(
+                    hashlib.sha256(old_normalized.encode()).hexdigest()
+                )
+                if old_normalized and old_normalized != normalized_name
+                else None
+            )
+            old_claim = (
+                await old_name_ref.get(transaction=transaction)
+                if old_name_ref is not None
+                else None
+            )
+            count = int(
+                (guild_snapshot.to_dict() or {}).get("custom_template_count", 0)
+            )
+            if not existing.exists and count >= MAX_CUSTOM_TEMPLATES:
+                return TemplateMutationResult(None, False, "limit")
+            if (
+                claimed_name.exists
+                and str((claimed_name.to_dict() or {}).get("template_id", ""))
+                != template_id
+            ):
+                return TemplateMutationResult(None, False, "duplicate_name")
+
+            created_at = existing_data.get("created_at", now)
+            created_by = str(existing_data.get("created_by", user_id))
+            data = {
+                "name": name,
+                "normalized_name": normalized_name,
+                "description": description,
+                "subject_label": subject_label,
+                "context_label": context_label,
+                "title_format": title_format,
+                "context_required": context_required,
+                "created_by": created_by,
+                "updated_by": user_id,
+                "created_at": created_at,
+                "updated_at": now,
+            }
+            transaction.set(template_ref, data)
+            transaction.set(name_ref, {"template_id": template_id})
+            if old_name_ref is not None and old_claim and old_claim.exists:
+                if (
+                    str((old_claim.to_dict() or {}).get("template_id", ""))
+                    == template_id
+                ):
+                    transaction.delete(old_name_ref)
+            if not existing.exists:
+                transaction.update(guild_ref, {"custom_template_count": count + 1})
+            return TemplateMutationResult(
+                ProposalTemplate.from_document(guild_id, template_id, data),
+                True,
+                "created" if not existing.exists else "updated",
+            )
+
+        return await save_in_transaction(transaction)
+
+    async def delete_template(
+        self, guild_id: str, template_id: str
+    ) -> TemplateMutationResult:
+        if builtin_template(template_id):
+            return TemplateMutationResult(None, False, "builtin")
+        guild_ref = self.client.collection("guilds").document(guild_id)
+        template_ref = guild_ref.collection("templates").document(template_id)
+        transaction = self.client.transaction()
+
+        @firestore.async_transactional
+        async def delete_in_transaction(transaction: Any) -> TemplateMutationResult:
+            guild_snapshot = await guild_ref.get(transaction=transaction)
+            snapshot = await template_ref.get(transaction=transaction)
+            if not snapshot.exists:
+                return TemplateMutationResult(None, False, "not_found")
+            template = ProposalTemplate.from_document(
+                guild_id, snapshot.id, snapshot.to_dict() or {}
+            )
+            name_ref = guild_ref.collection("template_names").document(
+                hashlib.sha256(template.normalized_name.encode()).hexdigest()
+            )
+            name_snapshot = await name_ref.get(transaction=transaction)
+            count = int(
+                (guild_snapshot.to_dict() or {}).get("custom_template_count", 0)
+            )
+            transaction.delete(template_ref)
+            if (
+                name_snapshot.exists
+                and str((name_snapshot.to_dict() or {}).get("template_id", ""))
+                == template_id
+            ):
+                transaction.delete(name_ref)
+            if guild_snapshot.exists:
+                transaction.update(
+                    guild_ref, {"custom_template_count": max(0, count - 1)}
+                )
+            return TemplateMutationResult(template, True, "deleted")
+
+        return await delete_in_transaction(transaction)
+
     async def list_pending_terminal_effects(self) -> Sequence[Proposal]:
         query = self.client.collection("proposals").where(
             filter=FieldFilter("status", "!=", ProposalStatus.ACTIVE.value)
@@ -294,11 +503,19 @@ class FirestoreRepository:
         await ref.update({"message_id": message_id})
         return await self.get_proposal(proposal_id)
 
+    async def set_outcome_message_id(
+        self, proposal_id: str, message_id: str
+    ) -> Proposal | None:
+        ref = self.client.collection("proposals").document(proposal_id)
+        await ref.update({"outcome_message_id": message_id})
+        return await self.get_proposal(proposal_id)
+
     async def transition(
         self,
         proposal_id: str,
         status: ProposalStatus,
         now: datetime,
+        veto_reason: str = "",
     ) -> TransitionResult:
         proposal_ref = self.client.collection("proposals").document(proposal_id)
         transaction = self.client.transaction()
@@ -328,6 +545,9 @@ class FirestoreRepository:
                     "announcement_synced": False,
                     "effects_complete": False,
                     "announcement_version": proposal.announcement_version + 1,
+                    "veto_reason": (
+                        veto_reason if status is ProposalStatus.VETOED else ""
+                    ),
                 },
             )
             if (
@@ -342,6 +562,7 @@ class FirestoreRepository:
                 announcement_synced=False,
                 effects_complete=False,
                 announcement_version=proposal.announcement_version + 1,
+                veto_reason=veto_reason if status is ProposalStatus.VETOED else "",
             )
             return TransitionResult(terminal, True, "transitioned")
 
@@ -505,6 +726,16 @@ class FirestoreRepository:
             }
         )
         return not was_enabled
+
+    async def get_guild_subscription(self, guild_id: str, user_id: str) -> bool:
+        snapshot = await (
+            self.client.collection("guilds")
+            .document(guild_id)
+            .collection("subscribers")
+            .document(user_id)
+            .get()
+        )
+        return bool(snapshot.exists)
 
     async def guild_subscribers(self, guild_id: str) -> Sequence[str]:
         query = (

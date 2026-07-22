@@ -66,11 +66,17 @@ class DiscordClient:
             return response.json() if response.content else None
         raise AssertionError("request retry loop exhausted")
 
-    async def edit_interaction_response(self, token: str, content: str) -> None:
+    async def edit_interaction_response(
+        self, token: str, content: str, *, clear_components: bool = False
+    ) -> None:
         await self._request(
             "PATCH",
             f"/webhooks/{self.settings.discord_application_id}/{token}/messages/@original",
-            json={"content": content, "allowed_mentions": {"parse": []}},
+            json={
+                "content": content,
+                "allowed_mentions": {"parse": []},
+                **({"components": []} if clear_components else {}),
+            },
         )
 
     async def create_proposal_announcement(self, proposal: Proposal) -> str:
@@ -79,7 +85,7 @@ class DiscordClient:
             "POST",
             f"/channels/{proposal.output_channel_id}/messages",
             json={
-                "content": _proposal_content(proposal),
+                "embeds": [_proposal_embed(proposal)],
                 "components": proposal_buttons(proposal.id),
                 "allowed_mentions": {"parse": []},
                 "nonce": nonce,
@@ -90,8 +96,8 @@ class DiscordClient:
             raise DiscordAPIError(502, "Discord did not return a message ID")
         return str(result["id"])
 
-    async def sync_proposal_announcement(self, proposal: Proposal) -> None:
-        content = _proposal_content(proposal)
+    async def sync_proposal_announcement(self, proposal: Proposal) -> str:
+        embed = _proposal_embed(proposal)
         components = (
             proposal_buttons(proposal.id)
             if proposal.status is ProposalStatus.ACTIVE
@@ -106,26 +112,53 @@ class DiscordClient:
                         f"/messages/{proposal.message_id}"
                     ),
                     json={
-                        "content": content,
+                        "content": "",
+                        "embeds": [embed],
                         "components": components,
                         "allowed_mentions": {"parse": []},
                     },
                 )
-                return
+                return proposal.message_id
             except DiscordAPIError as exc:
                 if exc.status_code != 404:
                     raise
-        await self._request(
+        result = await self._request(
             "POST",
             f"/channels/{proposal.output_channel_id}/messages",
             json={
-                "content": content,
+                "embeds": [embed],
                 "components": components,
                 "allowed_mentions": {"parse": []},
                 "nonce": _nonce(f"{proposal.status}:{proposal.id}"),
                 "enforce_nonce": True,
             },
         )
+        if not result or "id" not in result:
+            raise DiscordAPIError(502, "Discord did not return a message ID")
+        return str(result["id"])
+
+    async def create_outcome_reply(self, proposal: Proposal) -> str:
+        if not proposal.message_id:
+            raise DiscordAPIError(409, "Proposal has no canonical message")
+        result = await self._request(
+            "POST",
+            f"/channels/{proposal.output_channel_id}/messages",
+            json={
+                "embeds": [_outcome_embed(proposal)],
+                "message_reference": {
+                    "message_id": proposal.message_id,
+                    "channel_id": proposal.output_channel_id,
+                    "guild_id": proposal.guild_id,
+                    "fail_if_not_exists": False,
+                },
+                "allowed_mentions": {"parse": [], "replied_user": False},
+                "nonce": _nonce(f"outcome:{proposal.status}:{proposal.id}"),
+                "enforce_nonce": True,
+            },
+        )
+        if not result or "id" not in result:
+            raise DiscordAPIError(502, "Discord did not return an outcome message ID")
+        return str(result["id"])
 
     async def delete_proposal_announcement(self, proposal: Proposal) -> None:
         if not proposal.message_id:
@@ -203,31 +236,82 @@ def _nonce(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()[:25]
 
 
-def _proposal_content(proposal: Proposal) -> str:
-    lines = [f"**Proposal: {proposal.title}**"]
-    if proposal.context:
-        lines.extend(("", proposal.context))
+_COLORS = {
+    ProposalStatus.ACTIVE: 0x5865F2,
+    ProposalStatus.PASSED: 0x57F287,
+    ProposalStatus.VETOED: 0xED4245,
+    ProposalStatus.DELETED: 0x747F8D,
+}
+
+
+def _proposal_embed(proposal: Proposal) -> dict[str, Any]:
     if proposal.status is ProposalStatus.ACTIVE:
-        status = (
-            f"Unless vetoed, this proposal will pass "
-            f"<t:{int(proposal.deadline_at.timestamp())}:R>."
-        )
+        status = "Active — passes unless vetoed"
     else:
-        outcome = {
-            ProposalStatus.PASSED: "passed",
-            ProposalStatus.VETOED: "was vetoed",
-            ProposalStatus.DELETED: "was deleted by an admin",
+        status = {
+            ProposalStatus.PASSED: "Passed",
+            ProposalStatus.VETOED: "Vetoed",
+            ProposalStatus.DELETED: "Deleted by a moderator",
         }[proposal.status]
-        status = f"This proposal {outcome}."
     count = proposal.acknowledgement_count
-    lines.extend(
-        (
-            "",
-            status,
-            f"Acknowledged by **{count}** member{'s' if count != 1 else ''}.",
+    fields: list[dict[str, Any]] = [
+        {"name": "Status", "value": status, "inline": True},
+        {
+            "name": "Deadline",
+            "value": (
+                f"<t:{int(proposal.deadline_at.timestamp())}:F>\n"
+                f"<t:{int(proposal.deadline_at.timestamp())}:R>"
+            ),
+            "inline": True,
+        },
+        {
+            "name": "Acknowledged",
+            "value": f"{count} member{'s' if count != 1 else ''}",
+            "inline": True,
+        },
+    ]
+    if proposal.status is ProposalStatus.VETOED and proposal.veto_reason:
+        fields.append(
+            {
+                "name": "Anonymous veto reason",
+                "value": proposal.veto_reason,
+                "inline": False,
+            }
         )
-    )
-    return "\n".join(lines)
+    return {
+        "author": {"name": f"{proposal.template_name} proposal"[:256]},
+        "title": proposal.title,
+        **({"description": proposal.context} if proposal.context else {}),
+        "color": _COLORS[proposal.status],
+        "fields": fields,
+        "footer": {
+            "text": (
+                "Consent-based: acknowledgement is not support"
+                if proposal.status is ProposalStatus.ACTIVE
+                else "Proposal resolved"
+            )
+        },
+        "timestamp": proposal.created_at.isoformat(),
+    }
+
+
+def _outcome_embed(proposal: Proposal) -> dict[str, Any]:
+    title, description = {
+        ProposalStatus.PASSED: ("Proposal passed", proposal.title),
+        ProposalStatus.VETOED: ("Proposal vetoed", proposal.title),
+        ProposalStatus.DELETED: (
+            "Proposal deleted by a moderator",
+            proposal.title,
+        ),
+    }[proposal.status]
+    if proposal.status is ProposalStatus.VETOED and proposal.veto_reason:
+        description += f"\n\n**Anonymous reason**\n{proposal.veto_reason}"
+    return {
+        "title": title,
+        "description": description,
+        "color": _COLORS[proposal.status],
+        "timestamp": (proposal.terminal_at or proposal.created_at).isoformat(),
+    }
 
 
 def _base_permissions(

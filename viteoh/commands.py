@@ -1,119 +1,215 @@
+from typing import Any
+
+
+def _option(
+    name: str,
+    description: str,
+    option_type: int,
+    *,
+    required: bool = False,
+    autocomplete: bool = False,
+    **extra: object,
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "description": description,
+        "type": option_type,
+        "required": required,
+        **({"autocomplete": True} if autocomplete else {}),
+        **extra,
+    }
+
+
 COMMANDS: list[dict[str, object]] = [
     {
-        "name": "setup",
-        "description": "Configure this server's proposal channel and vote duration",
+        "name": "proposal",
+        "description": "Create and manage consent-based proposals",
         "type": 1,
         "options": [
             {
-                "name": "channel",
-                "description": "Channel for proposal announcements",
-                "type": 7,
-                "required": False,
-                "channel_types": [0, 5],
+                "name": "create",
+                "description": "Create a guided proposal",
+                "type": 1,
+                "options": [
+                    _option(
+                        "template",
+                        "Proposal template (defaults to General)",
+                        3,
+                        autocomplete=True,
+                    )
+                ],
+            },
+            {"name": "list", "description": "List active proposals", "type": 1},
+            {
+                "name": "nudge",
+                "description": "Anonymously notify a member about a proposal",
+                "type": 1,
+                "options": [
+                    _option(
+                        "proposal",
+                        "Active proposal",
+                        3,
+                        required=True,
+                        autocomplete=True,
+                    ),
+                    _option("user", "Member to notify", 6, required=True),
+                ],
             },
             {
-                "name": "duration_minutes",
-                "description": "Voting duration from 1 minute to 7 days",
-                "type": 4,
-                "required": False,
-                "min_value": 1,
-                "max_value": 10080,
+                "name": "delete",
+                "description": "Delete an active proposal (Manage Server)",
+                "type": 1,
+                "options": [
+                    _option(
+                        "proposal",
+                        "Active proposal",
+                        3,
+                        required=True,
+                        autocomplete=True,
+                    )
+                ],
+            },
+            {
+                "name": "configure",
+                "description": "Configure this server (Manage Server)",
+                "type": 1,
+                "options": [
+                    _option(
+                        "channel",
+                        "Channel for proposal announcements",
+                        7,
+                        channel_types=[0, 5],
+                    ),
+                    _option(
+                        "duration_minutes",
+                        "Proposal duration from 1 minute to 7 days",
+                        4,
+                        min_value=1,
+                        max_value=10080,
+                    ),
+                ],
+            },
+            {
+                "name": "preferences",
+                "description": "View or change your proposal notifications",
+                "type": 1,
+                "options": [
+                    _option("new_proposals", "DM me about new proposals", 5),
+                    _option("nudges", "Allow anonymous proposal nudges", 5),
+                ],
+            },
+            {
+                "name": "help",
+                "description": "Explain Vite-oh and its commands",
+                "type": 1,
+            },
+            {
+                "name": "template",
+                "description": "Manage this server's proposal templates",
+                "type": 2,
+                "options": [
+                    {
+                        "name": "create",
+                        "description": "Create a custom template (Manage Server)",
+                        "type": 1,
+                        "options": [
+                            _option(
+                                "context_required",
+                                "Require context when using this template",
+                                5,
+                            )
+                        ],
+                    },
+                    {
+                        "name": "edit",
+                        "description": "Edit a custom template (Manage Server)",
+                        "type": 1,
+                        "options": [
+                            _option(
+                                "template",
+                                "Custom template to edit",
+                                3,
+                                required=True,
+                                autocomplete=True,
+                            ),
+                            _option(
+                                "context_required",
+                                "Change whether context is required",
+                                5,
+                            ),
+                        ],
+                    },
+                    {
+                        "name": "delete",
+                        "description": "Delete a custom template (Manage Server)",
+                        "type": 1,
+                        "options": [
+                            _option(
+                                "template",
+                                "Custom template to delete",
+                                3,
+                                required=True,
+                                autocomplete=True,
+                            )
+                        ],
+                    },
+                    {
+                        "name": "list",
+                        "description": "List built-in and custom templates",
+                        "type": 1,
+                    },
+                ],
             },
         ],
-    },
-    {
-        "name": "new",
-        "description": "Create a new consent-based proposal",
-        "type": 1,
-        "options": [
-            {
-                "name": "title",
-                "description": "Short title for the proposal",
-                "type": 3,
-                "required": True,
-                "max_length": 100,
-            },
-            {
-                "name": "context",
-                "description": "Optional explanation or supporting link",
-                "type": 3,
-                "required": False,
-                "max_length": 1000,
-            },
-        ],
-    },
-    {
-        "name": "sub",
-        "description": "Subscribe to new proposal notifications",
-        "type": 1,
-    },
-    {
-        "name": "unsub",
-        "description": "Unsubscribe from new proposal notifications",
-        "type": 1,
-    },
-    {"name": "view", "description": "View all current proposals", "type": 1},
-    {
-        "name": "delete",
-        "description": "(Manage Server) Delete an active proposal",
-        "type": 1,
-        "options": [
-            {
-                "name": "proposal",
-                "description": "Active proposal to delete",
-                "type": 3,
-                "required": True,
-                "autocomplete": True,
-            }
-        ],
-    },
-    {
-        "name": "nudge",
-        "description": "Anonymously notify a member about an active proposal",
-        "type": 1,
-        "options": [
-            {
-                "name": "proposal",
-                "description": "Active proposal to bring to their attention",
-                "type": 3,
-                "required": True,
-                "autocomplete": True,
-            },
-            {
-                "name": "user",
-                "description": "Member to notify",
-                "type": 6,
-                "required": True,
-            },
-        ],
-    },
-    {
-        "name": "nudges",
-        "description": "View or change whether this server may nudge you",
-        "type": 1,
-        "options": [
-            {
-                "name": "enabled",
-                "description": "Allow anonymous proposal nudges from this server",
-                "type": 5,
-                "required": False,
-            }
-        ],
-    },
-    {"name": "help", "description": "Show available commands", "type": 1},
+    }
 ]
 
-HELP_TEXT = """**Available Commands**
 
-`/setup [channel] [duration_minutes]` — Configure or view this server.
-`/new <title> [context]` — Create a general proposal.
-`/sub` — Subscribe to notifications about new proposals.
-`/unsub` — Stop notifications about new proposals.
-`/view` — View active proposals.
-`/delete <proposal>` — Delete a proposal (Manage Server required).
-`/nudge <proposal> <user>` — Anonymously notify one member.
-`/nudges [enabled]` — View or change your nudge preference.
-`/help` — Show this help.
+HELP_TEXT = """**Vite-oh proposals**
 
-Use **Veto** to object anonymously, **Acknowledge** to privately record that
-you saw a proposal, and **Subscribe** to receive updates."""
+Proposals pass at their fixed deadline unless a server member anonymously vetoes.
+Acknowledgement records only that you saw a proposal; it is not a vote of support.
+
+`/proposal create [template]` — Open a guided proposal form.
+`/proposal list` — List active proposals.
+`/proposal nudge <proposal> <user>` — Anonymously notify one member.
+`/proposal preferences` — View or change notifications and nudges.
+`/proposal configure` — Configure this server (Manage Server).
+`/proposal delete <proposal>` — Delete a proposal (Manage Server).
+`/proposal template ...` — Manage guided templates.
+`/proposal help` — Show this help."""
+
+
+def command_path_and_options(
+    data: dict[str, Any],
+) -> tuple[tuple[str, ...], dict[str, Any]]:
+    path = [str(data.get("name", ""))]
+    options = data.get("options") or []
+    while len(options) == 1 and int(options[0].get("type", 0)) in {1, 2}:
+        branch = options[0]
+        path.append(str(branch.get("name", "")))
+        options = branch.get("options") or []
+    return tuple(path), {
+        str(option.get("name", "")): option.get("value")
+        for option in options
+        if int(option.get("type", 0)) not in {1, 2}
+    }
+
+
+def focused_option(
+    data: dict[str, Any],
+) -> tuple[tuple[str, ...], dict[str, Any] | None]:
+    path = [str(data.get("name", ""))]
+    options = data.get("options") or []
+    while True:
+        branch = next(
+            (option for option in options if int(option.get("type", 0)) in {1, 2}),
+            None,
+        )
+        if branch is None:
+            break
+        path.append(str(branch.get("name", "")))
+        options = branch.get("options") or []
+    return tuple(path), next(
+        (option for option in options if option.get("focused")), None
+    )

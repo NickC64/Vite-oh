@@ -20,6 +20,7 @@ class GuildConfig:
     configured_by: str
     created_at: datetime
     updated_at: datetime
+    custom_template_count: int = 0
 
     @classmethod
     def from_document(cls, document_id: str, data: dict[str, Any]) -> "GuildConfig":
@@ -29,6 +30,45 @@ class GuildConfig:
             output_channel_id=data["output_channel_id"],
             proposal_timeout_seconds=int(data["proposal_timeout_seconds"]),
             configured_by=data["configured_by"],
+            created_at=_utc(data["created_at"]),
+            updated_at=_utc(data["updated_at"]),
+            custom_template_count=int(data.get("custom_template_count", 0)),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ProposalTemplate:
+    id: str
+    guild_id: str
+    name: str
+    normalized_name: str
+    description: str
+    subject_label: str
+    context_label: str
+    title_format: str
+    context_required: bool
+    created_by: str
+    updated_by: str
+    created_at: datetime
+    updated_at: datetime
+    builtin: bool = False
+
+    @classmethod
+    def from_document(
+        cls, guild_id: str, document_id: str, data: dict[str, Any]
+    ) -> "ProposalTemplate":
+        return cls(
+            id=document_id,
+            guild_id=guild_id,
+            name=data["name"],
+            normalized_name=data["normalized_name"],
+            description=data["description"],
+            subject_label=data["subject_label"],
+            context_label=data["context_label"],
+            title_format=data["title_format"],
+            context_required=bool(data.get("context_required", False)),
+            created_by=data["created_by"],
+            updated_by=data["updated_by"],
             created_at=_utc(data["created_at"]),
             updated_at=_utc(data["updated_at"]),
         )
@@ -56,6 +96,10 @@ class Proposal:
     acknowledgement_count: int = 0
     nudge_count: int = 0
     announcement_version: int = 0
+    template_id: str = "builtin:general"
+    template_name: str = "General"
+    veto_reason: str = ""
+    outcome_message_id: str | None = None
 
     @classmethod
     def from_document(cls, document_id: str, data: dict[str, Any]) -> "Proposal":
@@ -82,6 +126,10 @@ class Proposal:
             acknowledgement_count=int(data.get("acknowledgement_count", 0)),
             nudge_count=int(data.get("nudge_count", 0)),
             announcement_version=int(data.get("announcement_version", 0)),
+            template_id=data.get("template_id", "builtin:general"),
+            template_name=data.get("template_name", "General"),
+            veto_reason=data.get("veto_reason", ""),
+            outcome_message_id=data.get("outcome_message_id"),
         )
 
 
@@ -101,6 +149,13 @@ class TransitionResult:
 @dataclass(frozen=True, slots=True)
 class ProposalActionResult:
     proposal: Proposal | None
+    changed: bool
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class TemplateMutationResult:
+    template: ProposalTemplate | None
     changed: bool
     reason: str
 

@@ -9,9 +9,12 @@ from viteoh.domain import (
     Proposal,
     ProposalActionResult,
     ProposalStatus,
+    ProposalTemplate,
+    TemplateMutationResult,
     TransitionResult,
 )
 from viteoh.repository import reservation_id
+from viteoh.templates import BUILTIN_TEMPLATES, MAX_CUSTOM_TEMPLATES, builtin_template
 
 
 class FakeRepository:
@@ -25,6 +28,7 @@ class FakeRepository:
         self.acknowledgements: dict[str, set[str]] = {}
         self.nudges: dict[str, dict[str, str]] = {}
         self.nudge_preferences: dict[tuple[str, str], bool] = {}
+        self.templates: dict[tuple[str, str], ProposalTemplate] = {}
         self.lock = asyncio.Lock()
         self.next_id = "12345678-1234-1234-1234-123456789abc"
 
@@ -62,6 +66,8 @@ class FakeRepository:
         title: str,
         normalized_title: str,
         context: str,
+        template_id: str,
+        template_name: str,
         created_at: datetime,
         deadline_at: datetime,
     ) -> CreateProposalResult:
@@ -89,6 +95,8 @@ class FakeRepository:
                 status=ProposalStatus.ACTIVE,
                 created_at=created_at,
                 deadline_at=deadline_at,
+                template_id=template_id,
+                template_name=template_name,
             )
             self.proposals[proposal.id] = proposal
             self.interactions[interaction_id] = proposal.id
@@ -113,6 +121,86 @@ class FakeRepository:
             and not proposal.effects_complete
         ]
 
+    async def get_template(
+        self, guild_id: str, template_id: str
+    ) -> ProposalTemplate | None:
+        builtin = builtin_template(template_id)
+        return (
+            replace(builtin, guild_id=guild_id)
+            if builtin
+            else self.templates.get((guild_id, template_id))
+        )
+
+    async def list_templates(self, guild_id: str) -> list[ProposalTemplate]:
+        return [
+            *(replace(template, guild_id=guild_id) for template in BUILTIN_TEMPLATES),
+            *sorted(
+                (
+                    template
+                    for (item_guild, _), template in self.templates.items()
+                    if item_guild == guild_id
+                ),
+                key=lambda template: template.normalized_name,
+            ),
+        ]
+
+    async def save_template(
+        self,
+        guild_id: str,
+        template_id: str | None,
+        name: str,
+        normalized_name: str,
+        description: str,
+        subject_label: str,
+        context_label: str,
+        title_format: str,
+        context_required: bool,
+        user_id: str,
+        now: datetime,
+    ) -> TemplateMutationResult:
+        existing = self.templates.get((guild_id, template_id or ""))
+        custom = [
+            item
+            for (item_guild, _), item in self.templates.items()
+            if item_guild == guild_id
+        ]
+        if not existing and len(custom) >= MAX_CUSTOM_TEMPLATES:
+            return TemplateMutationResult(None, False, "limit")
+        if any(
+            item.normalized_name == normalized_name
+            and (not existing or item.id != existing.id)
+            for item in custom
+        ):
+            return TemplateMutationResult(None, False, "duplicate_name")
+        template_id = template_id or f"87654321-4321-4321-4321-{len(custom):012d}"
+        template = ProposalTemplate(
+            id=template_id,
+            guild_id=guild_id,
+            name=name,
+            normalized_name=normalized_name,
+            description=description,
+            subject_label=subject_label,
+            context_label=context_label,
+            title_format=title_format,
+            context_required=context_required,
+            created_by=existing.created_by if existing else user_id,
+            updated_by=user_id,
+            created_at=existing.created_at if existing else now,
+            updated_at=now,
+        )
+        self.templates[(guild_id, template_id)] = template
+        return TemplateMutationResult(
+            template, True, "updated" if existing else "created"
+        )
+
+    async def delete_template(
+        self, guild_id: str, template_id: str
+    ) -> TemplateMutationResult:
+        template = self.templates.pop((guild_id, template_id), None)
+        return TemplateMutationResult(
+            template, bool(template), "deleted" if template else "not_found"
+        )
+
     async def mark_task_scheduled(
         self, proposal_id: str, task_name: str
     ) -> Proposal | None:
@@ -128,8 +216,19 @@ class FakeRepository:
         self.proposals[proposal_id] = updated
         return updated
 
+    async def set_outcome_message_id(
+        self, proposal_id: str, message_id: str
+    ) -> Proposal | None:
+        updated = replace(self.proposals[proposal_id], outcome_message_id=message_id)
+        self.proposals[proposal_id] = updated
+        return updated
+
     async def transition(
-        self, proposal_id: str, status: ProposalStatus, now: datetime
+        self,
+        proposal_id: str,
+        status: ProposalStatus,
+        now: datetime,
+        veto_reason: str = "",
     ) -> TransitionResult:
         async with self.lock:
             proposal = self.proposals.get(proposal_id)
@@ -148,6 +247,7 @@ class FakeRepository:
                 announcement_synced=False,
                 effects_complete=False,
                 announcement_version=proposal.announcement_version + 1,
+                veto_reason=veto_reason if status is ProposalStatus.VETOED else "",
             )
             self.proposals[proposal_id] = updated
             return TransitionResult(updated, True, "transitioned")
@@ -226,6 +326,9 @@ class FakeRepository:
             users.discard(user_id)
         return before != enabled
 
+    async def get_guild_subscription(self, guild_id: str, user_id: str) -> bool:
+        return user_id in self.guild_users.get(guild_id, set())
+
     async def guild_subscribers(self, guild_id: str) -> list[str]:
         return sorted(self.guild_users.get(guild_id, set()))
 
@@ -297,6 +400,7 @@ class FakeDiscord:
         self.responses: list[str] = []
         self.announcements: list[Proposal] = []
         self.synced: list[Proposal] = []
+        self.outcomes: list[Proposal] = []
         self.dms: list[tuple[str, str]] = []
         self.dm_failures: set[str] = set()
         self.channels: dict[str, tuple[str, str]] = {
@@ -308,15 +412,22 @@ class FakeDiscord:
             ("guild", "bot"): {"user": {"id": "bot", "bot": True}},
         }
 
-    async def edit_interaction_response(self, token: str, content: str) -> None:
+    async def edit_interaction_response(
+        self, token: str, content: str, *, clear_components: bool = False
+    ) -> None:
         self.responses.append(content)
 
     async def create_proposal_announcement(self, proposal: Proposal) -> str:
         self.announcements.append(proposal)
         return "999"
 
-    async def sync_proposal_announcement(self, proposal: Proposal) -> None:
+    async def sync_proposal_announcement(self, proposal: Proposal) -> str:
         self.synced.append(proposal)
+        return proposal.message_id or "999"
+
+    async def create_outcome_reply(self, proposal: Proposal) -> str:
+        self.outcomes.append(proposal)
+        return "outcome-999"
 
     async def get_guild_member(self, guild_id: str, user_id: str) -> dict[str, object]:
         from viteoh.discord_api import DiscordAPIError

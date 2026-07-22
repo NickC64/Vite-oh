@@ -74,11 +74,144 @@ async def test_veto_prompts_without_worker(
         "type": 3,
         "guild_id": "guild",
         "member": {"user": {"id": "user"}},
-        "data": {"custom_id": component_id("veto", proposal_id)},
+        "data": {"custom_id": component_id("proposal", "veto", proposal_id)},
     }
     _, response = await signed_receive(service, key, payload)
-    assert response["type"] == 4
+    assert response["type"] == 9
+    assert response["data"]["custom_id"] == f"proposal-veto|{proposal_id}"
     assert not tasks.interactions
+
+
+async def test_create_command_opens_template_modal_immediately() -> None:
+    key = SigningKey.generate()
+    repository = FakeRepository()
+    now = utcnow()
+    await repository.set_guild_config(
+        "guild", "Test Guild", "channel", 60, "admin", now
+    )
+    tasks = FakeTasks()
+    service = InteractionReceiver(
+        Settings(discord_public_key=key.verify_key.encode().hex()),
+        SignatureVerifier(key.verify_key.encode().hex()),
+        tasks,
+        repository,  # type: ignore[arg-type]
+    )
+    _, response = await signed_receive(
+        service,
+        key,
+        {
+            "id": "create",
+            "type": 2,
+            "guild_id": "guild",
+            "member": {"user": {"id": "user"}},
+            "data": {
+                "name": "proposal",
+                "options": [{"name": "create", "type": 1, "options": []}],
+            },
+        },
+    )
+    assert response["type"] == 9
+    assert response["data"]["custom_id"] == "proposal-create|builtin:general"
+    assert response["data"]["components"][0]["components"][0]["label"] == (
+        "Proposal title"
+    )
+    assert not tasks.interactions
+
+
+async def test_template_autocomplete_and_admin_delete_confirmation() -> None:
+    key = SigningKey.generate()
+    repository = FakeRepository()
+    now = utcnow()
+    await repository.set_guild_config(
+        "guild", "Test Guild", "channel", 60, "admin", now
+    )
+    saved = await repository.save_template(
+        "guild",
+        None,
+        "Policy",
+        "policy",
+        "Change a server policy",
+        "Policy subject",
+        "Supporting context",
+        "Adopt {subject} as policy",
+        True,
+        "admin",
+        now,
+    )
+    assert saved.template
+    service = InteractionReceiver(
+        Settings(discord_public_key=key.verify_key.encode().hex()),
+        SignatureVerifier(key.verify_key.encode().hex()),
+        FakeTasks(),
+        repository,  # type: ignore[arg-type]
+    )
+    _, choices = await signed_receive(
+        service,
+        key,
+        {
+            "id": "autocomplete",
+            "type": 4,
+            "guild_id": "guild",
+            "member": {"user": {"id": "admin"}},
+            "data": {
+                "name": "proposal",
+                "options": [
+                    {
+                        "name": "template",
+                        "type": 2,
+                        "options": [
+                            {
+                                "name": "delete",
+                                "type": 1,
+                                "options": [
+                                    {
+                                        "name": "template",
+                                        "value": "pol",
+                                        "focused": True,
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            },
+        },
+    )
+    assert choices["data"]["choices"][0]["value"] == saved.template.id
+
+    _, confirmation = await signed_receive(
+        service,
+        key,
+        {
+            "id": "delete",
+            "type": 2,
+            "guild_id": "guild",
+            "member": {
+                "user": {"id": "admin"},
+                "permissions": str(1 << 5),
+            },
+            "data": {
+                "name": "proposal",
+                "options": [
+                    {
+                        "name": "template",
+                        "type": 2,
+                        "options": [
+                            {
+                                "name": "delete",
+                                "type": 1,
+                                "options": [
+                                    {"name": "template", "value": saved.template.id}
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            },
+        },
+    )
+    assert confirmation["type"] == 4
+    assert confirmation["data"]["components"]
 
 
 async def test_another_guild_is_accepted(
@@ -113,6 +246,8 @@ async def test_autocomplete_returns_filtered_uuid_choices() -> None:
         "Alpha proposal",
         "alpha proposal",
         "",
+        "builtin:general",
+        "General",
         now,
         now + timedelta(minutes=5),
     )
@@ -131,12 +266,18 @@ async def test_autocomplete_returns_filtered_uuid_choices() -> None:
             "guild_id": "guild",
             "member": {"user": {"id": "user"}},
             "data": {
-                "name": "nudge",
+                "name": "proposal",
                 "options": [
                     {
-                        "name": "proposal",
-                        "value": "ALP",
-                        "focused": True,
+                        "name": "nudge",
+                        "type": 1,
+                        "options": [
+                            {
+                                "name": "proposal",
+                                "value": "ALP",
+                                "focused": True,
+                            }
+                        ],
                     }
                 ],
             },
@@ -144,7 +285,7 @@ async def test_autocomplete_returns_filtered_uuid_choices() -> None:
     )
     assert response["type"] == 8
     assert response["data"]["choices"] == [
-        {"name": "Alpha proposal", "value": repository.next_id}
+        {"name": "Alpha proposal · General", "value": repository.next_id}
     ]
     assert not tasks.interactions
 
@@ -170,8 +311,20 @@ async def test_autocomplete_errors_return_empty_choices() -> None:
             "guild_id": "guild",
             "member": {"user": {"id": "user"}},
             "data": {
-                "name": "delete",
-                "options": [{"name": "proposal", "value": "", "focused": True}],
+                "name": "proposal",
+                "options": [
+                    {
+                        "name": "delete",
+                        "type": 1,
+                        "options": [
+                            {
+                                "name": "proposal",
+                                "value": "",
+                                "focused": True,
+                            }
+                        ],
+                    }
+                ],
             },
         },
     )

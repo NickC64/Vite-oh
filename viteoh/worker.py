@@ -3,13 +3,20 @@ from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
-from viteoh.commands import HELP_TEXT
-from viteoh.components import parse_component_id
+from viteoh.commands import HELP_TEXT, command_path_and_options
+from viteoh.components import modal_values, parse_component_id
 from viteoh.config import Settings
 from viteoh.discord_api import DiscordAPIError, DiscordClient
-from viteoh.domain import GuildConfig, Proposal, ProposalStatus, utcnow
+from viteoh.domain import (
+    GuildConfig,
+    Proposal,
+    ProposalStatus,
+    ProposalTemplate,
+    utcnow,
+)
 from viteoh.repository import Repository, normalize_title
 from viteoh.tasks import TaskDispatcher
+from viteoh.templates import format_title, validate_template_fields
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +49,24 @@ class InteractionProcessor:
                 content = await self._command(payload, guild_id, user_id)
             elif interaction_type == 3:
                 content = await self._component(payload, guild_id, user_id)
+            elif interaction_type == 5:
+                content = await self._modal(payload, guild_id, user_id)
             else:
                 content = "Unsupported interaction."
-            await self.discord.edit_interaction_response(token, content)
+            parsed_component = (
+                parse_component_id(
+                    str((payload.get("data") or {}).get("custom_id", ""))
+                )
+                if interaction_type == 3
+                else None
+            )
+            await self.discord.edit_interaction_response(
+                token,
+                content,
+                clear_components=bool(
+                    parsed_component and parsed_component[1] == "confirm-delete"
+                ),
+            )
         except DiscordAPIError as exc:
             if exc.retryable:
                 raise
@@ -59,81 +81,148 @@ class InteractionProcessor:
     async def _command(
         self, payload: dict[str, Any], guild_id: str, user_id: str
     ) -> str:
-        data = payload.get("data") or {}
-        command = data.get("name")
-        options = {
-            option["name"]: option.get("value") for option in data.get("options", [])
-        }
-        if command == "setup":
+        path, options = command_path_and_options(payload.get("data") or {})
+        if path == ("proposal", "configure"):
             return await self._setup(payload, guild_id, user_id, options)
-        if command == "help":
+        if path == ("proposal", "help"):
             return HELP_TEXT
 
         config = await self.repository.get_guild_config(guild_id)
         if not config:
             return (
                 "This server has not been configured. A member with Manage Server "
-                "must run `/setup` first."
+                "must run `/proposal configure` first."
             )
-        if command == "new":
-            return await self._new(
-                str(payload["id"]),
-                str(options.get("title", "")),
-                str(options.get("context", "")),
-                config,
-            )
-        if command == "sub":
-            changed = await self.repository.set_guild_subscription(
-                guild_id, user_id, True
-            )
-            return (
-                "You have subscribed to new proposal notifications."
-                if changed
-                else "You are already subscribed to new proposal notifications."
-            )
-        if command == "unsub":
-            changed = await self.repository.set_guild_subscription(
-                guild_id, user_id, False
-            )
-            return (
-                "You have unsubscribed from new proposal notifications."
-                if changed
-                else "You are not currently subscribed to new proposal notifications."
-            )
-        if command == "view":
+        if path == ("proposal", "list"):
             proposals = await self.repository.list_active(guild_id)
             if not proposals:
                 return "There are no active proposals."
             ordered = sorted(proposals, key=lambda proposal: proposal.deadline_at)
-            return "Current proposals:\n" + "\n".join(
-                (f"• {proposal.title} — <t:{int(proposal.deadline_at.timestamp())}:R>")
+            return "**Active proposals**\n" + "\n".join(
+                (
+                    f"• [{proposal.title}]({_proposal_link(proposal)}) "
+                    f"· {proposal.template_name} · "
+                    f"<t:{int(proposal.deadline_at.timestamp())}:R>"
+                )
                 for proposal in ordered
             )
-        if command == "delete":
-            if not self._is_admin(payload, user_id):
-                return "You need Manage Server permission to use this command."
-            return await self._delete(guild_id, str(options.get("proposal", "")))
-        if command == "nudges":
-            enabled = options.get("enabled")
-            if enabled is None:
-                current = await self.repository.get_nudges_enabled(guild_id, user_id)
-                return (
-                    "Anonymous proposal nudges are currently "
-                    f"{'enabled' if current else 'disabled'} for you in this server."
+        if path == ("proposal", "preferences"):
+            new_value = options.get("new_proposals")
+            nudge_value = options.get("nudges")
+            if new_value is not None:
+                await self.repository.set_guild_subscription(
+                    guild_id, user_id, bool(new_value)
                 )
-            await self.repository.set_nudges_enabled(guild_id, user_id, bool(enabled))
-            return (
-                "Anonymous proposal nudges are now "
-                f"{'enabled' if enabled else 'disabled'} for you in this server."
+            if nudge_value is not None:
+                await self.repository.set_nudges_enabled(
+                    guild_id, user_id, bool(nudge_value)
+                )
+            new_enabled = await self.repository.get_guild_subscription(
+                guild_id, user_id
             )
-        if command == "nudge":
+            nudges_enabled = await self.repository.get_nudges_enabled(guild_id, user_id)
+            return (
+                "**Your proposal preferences in this server**\n"
+                f"New proposal DMs: **{'on' if new_enabled else 'off'}**\n"
+                f"Anonymous nudges: **{'on' if nudges_enabled else 'off'}**"
+            )
+        if path == ("proposal", "nudge"):
             return await self._nudge(
                 guild_id,
                 user_id,
                 str(options.get("proposal", "")),
                 str(options.get("user", "")),
             )
+        if path == ("proposal", "template", "list"):
+            templates = await self.repository.list_templates(guild_id)
+            return "**Available proposal templates**\n" + "\n".join(
+                f"• **{template.name}** — {template.description}"
+                + (" *(built-in)*" if template.builtin else "")
+                for template in templates
+            )
         return "Unknown command."
+
+    async def _modal(self, payload: dict[str, Any], guild_id: str, user_id: str) -> str:
+        data = payload.get("data") or {}
+        custom_id = str(data.get("custom_id", ""))
+        values = modal_values(data)
+        if custom_id.startswith("proposal-create|"):
+            config = await self.repository.get_guild_config(guild_id)
+            if not config:
+                return "This server is no longer configured."
+            template_id = custom_id.removeprefix("proposal-create|")
+            template = await self.repository.get_template(guild_id, template_id)
+            if not template:
+                return "That proposal template no longer exists."
+            context = values.get("context", "").strip()
+            if template.context_required and not context:
+                return "This template requires proposal context."
+            try:
+                title = format_title(template, values.get("subject", ""))
+            except ValueError as exc:
+                return str(exc)
+            return await self._new(str(payload["id"]), title, context, template, config)
+        if custom_id.startswith("proposal-veto|"):
+            proposal_id = custom_id.removeprefix("proposal-veto|")
+            reason = values.get("reason", "").strip()
+            if len(reason) > 500:
+                return "Veto reasons cannot exceed 500 characters."
+            proposal = await self._active_proposal(guild_id, proposal_id)
+            if not proposal:
+                return "This proposal is no longer active."
+            return await self._veto(proposal, reason)
+        if custom_id.startswith(("template-create|", "template-edit|")):
+            if not self._is_admin(payload, user_id):
+                return "You need Manage Server permission to manage templates."
+            if not await self.repository.get_guild_config(guild_id):
+                return "Run `/proposal configure` before managing templates."
+            parts = custom_id.split("|")
+            if len(parts) != 3:
+                return "This template form is no longer valid."
+            action, template_id, required_value = parts
+            editing_id = template_id if action == "template-edit" else None
+            if editing_id:
+                existing = await self.repository.get_template(guild_id, editing_id)
+                if not existing or existing.builtin:
+                    return "That custom template no longer exists."
+            try:
+                (
+                    name,
+                    normalized_name,
+                    description,
+                    subject_label,
+                    context_label,
+                    title_format,
+                ) = validate_template_fields(
+                    values.get("name", ""),
+                    values.get("description", ""),
+                    values.get("subject_label", ""),
+                    values.get("context_label", ""),
+                    values.get("title_format", ""),
+                )
+            except ValueError as exc:
+                return str(exc)
+            result = await self.repository.save_template(
+                guild_id,
+                editing_id,
+                name,
+                normalized_name,
+                description,
+                subject_label,
+                context_label,
+                title_format,
+                required_value == "1",
+                user_id,
+                utcnow(),
+            )
+            if result.reason == "duplicate_name":
+                return "A custom template with that name already exists."
+            if result.reason == "limit":
+                return "This server already has the maximum of 20 custom templates."
+            if not result.changed or not result.template:
+                return "The template could not be saved."
+            return f"Template **{result.template.name}** has been {result.reason}."
+        return "This form is no longer valid."
 
     async def _setup(
         self,
@@ -194,6 +283,7 @@ class InteractionProcessor:
         interaction_id: str,
         title: str,
         context: str,
+        template: ProposalTemplate,
         config: GuildConfig,
     ) -> str:
         title = " ".join(title.split())
@@ -214,6 +304,8 @@ class InteractionProcessor:
             title,
             normalized,
             context,
+            template.id,
+            template.name,
             now,
             deadline,
         )
@@ -241,7 +333,7 @@ class InteractionProcessor:
                     await self.repository.mark_effects_complete(proposal.id)
                 return (
                     "I could not post in the configured proposal channel. "
-                    "Run `/setup` after fixing my channel permissions."
+                    "Run `/proposal configure` after fixing my channel permissions."
                 )
             proposal = (
                 await self.repository.set_message_id(proposal.id, message_id)
@@ -331,7 +423,24 @@ class InteractionProcessor:
         )
         if not parsed:
             return "This control is no longer valid."
-        action, proposal_id = parsed
+        scope, action, resource_id = parsed
+        if action == "confirm-delete":
+            if not self._is_admin(payload, user_id):
+                return "You need Manage Server permission to delete this."
+            if scope == "proposal":
+                return await self._delete(guild_id, resource_id)
+            template = await self.repository.get_template(guild_id, resource_id)
+            if not template or template.builtin:
+                return "That custom template no longer exists."
+            result = await self.repository.delete_template(guild_id, resource_id)
+            return (
+                f"Template **{template.name}** has been deleted."
+                if result.changed
+                else "That custom template no longer exists."
+            )
+        if scope != "proposal":
+            return "This control is no longer valid."
+        proposal_id = resource_id
         proposal = await self.repository.get_proposal(proposal_id)
         if not proposal or proposal.status is not ProposalStatus.ACTIVE:
             return "This proposal is no longer active."
@@ -360,19 +469,20 @@ class InteractionProcessor:
                 "you may still veto it before the deadline."
             )
         if action == "confirm-veto":
-            result = await self.repository.transition(
-                proposal_id, ProposalStatus.VETOED, utcnow()
-            )
-            if result.reason == "deadline_elapsed":
-                return (
-                    "The deadline has elapsed; this proposal can no longer be vetoed."
-                )
-            if not result.changed or not result.proposal:
-                return "This proposal is no longer active."
-            await self.tasks.delete(result.proposal.deadline_task_name)
-            await self.sync_terminal_effects(result.proposal)
-            return "You have vetoed the proposal anonymously."
+            return await self._veto(proposal, "")
         return "This control is no longer valid."
+
+    async def _veto(self, proposal: Proposal, reason: str) -> str:
+        result = await self.repository.transition(
+            proposal.id, ProposalStatus.VETOED, utcnow(), reason
+        )
+        if result.reason == "deadline_elapsed":
+            return "The deadline has elapsed; this proposal can no longer be vetoed."
+        if not result.changed or not result.proposal:
+            return "This proposal is no longer active."
+        await self.tasks.delete(result.proposal.deadline_task_name)
+        await self.sync_terminal_effects(result.proposal)
+        return "You have vetoed the proposal anonymously."
 
     async def finalize(self, proposal_id: str) -> str:
         result = await self.repository.transition(
@@ -422,9 +532,17 @@ class InteractionProcessor:
         return result
 
     async def sync_terminal_effects(self, proposal: Proposal) -> None:
-        if not proposal.announcement_synced:
-            await self._sync_announcement(proposal.id)
+        if not proposal.announcement_synced or not proposal.outcome_message_id:
+            proposal = await self._sync_announcement(proposal.id) or proposal
             await self.repository.mark_announcement_synced(proposal.id)
+        if not proposal.outcome_message_id:
+            outcome_message_id = await self.discord.create_outcome_reply(proposal)
+            proposal = (
+                await self.repository.set_outcome_message_id(
+                    proposal.id, outcome_message_id
+                )
+                or proposal
+            )
         subscribers = await self.repository.proposal_subscribers(proposal.id)
         event = proposal.status.value
         outcome = {
@@ -455,7 +573,12 @@ class InteractionProcessor:
             if not latest:
                 return None
             version = latest.announcement_version
-            await self.discord.sync_proposal_announcement(latest)
+            message_id = await self.discord.sync_proposal_announcement(latest)
+            if message_id != latest.message_id:
+                latest = (
+                    await self.repository.set_message_id(proposal_id, message_id)
+                    or latest
+                )
             current = await self.repository.get_proposal(proposal_id)
             if not current or current.announcement_version == version:
                 return current or latest
@@ -548,8 +671,13 @@ def _proposal_link(proposal: Proposal) -> str:
 
 def _proposal_details(proposal: Proposal) -> str:
     context = f"\n{proposal.context}" if proposal.context else ""
+    reason = (
+        f"\nAnonymous veto reason: {proposal.veto_reason}"
+        if proposal.status is ProposalStatus.VETOED and proposal.veto_reason
+        else ""
+    )
     return (
-        f"**{proposal.title}**{context}\n"
+        f"**{proposal.title}** · {proposal.template_name}{context}{reason}\n"
         f"Deadline: <t:{int(proposal.deadline_at.timestamp())}:F>"
     )
 
