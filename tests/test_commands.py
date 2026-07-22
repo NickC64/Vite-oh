@@ -12,15 +12,20 @@ def test_proposal_command_schema_is_nested_and_uses_autocomplete() -> None:
         "configure",
         "preferences",
         "help",
-        "template",
+        "type",
     }
-    assert subcommands["create"]["options"][0]["autocomplete"] is True
+    create_options = {
+        str(option["name"]): option for option in subcommands["create"]["options"]
+    }
+    assert create_options["title"]["required"] is True
+    assert create_options["type"]["autocomplete"] is True
+    assert create_options["context"]["max_length"] == 1000
     assert subcommands["delete"]["options"][0]["autocomplete"] is True
     assert subcommands["nudge"]["options"][1]["type"] == 6
-    template_commands = {
-        str(option["name"]): option for option in subcommands["template"]["options"]
+    type_commands = {
+        str(option["name"]): option for option in subcommands["type"]["options"]
     }
-    assert set(template_commands) == {"create", "edit", "delete", "list"}
+    assert set(type_commands) == {"create", "edit", "delete", "list"}
 
 
 def test_nested_command_and_focused_option_parsing() -> None:
@@ -28,7 +33,7 @@ def test_nested_command_and_focused_option_parsing() -> None:
         "name": "proposal",
         "options": [
             {
-                "name": "template",
+                "name": "type",
                 "type": 2,
                 "options": [
                     {
@@ -36,7 +41,7 @@ def test_nested_command_and_focused_option_parsing() -> None:
                         "type": 1,
                         "options": [
                             {
-                                "name": "template",
+                                "name": "type",
                                 "value": "abc",
                                 "focused": True,
                             }
@@ -47,8 +52,8 @@ def test_nested_command_and_focused_option_parsing() -> None:
         ],
     }
     assert command_path_and_options(data) == (
-        ("proposal", "template", "edit"),
-        {"template": "abc"},
+        ("proposal", "type", "edit"),
+        {"type": "abc"},
     )
-    assert focused_option(data)[0] == ("proposal", "template", "edit")
+    assert focused_option(data)[0] == ("proposal", "type", "edit")
     assert focused_option(data)[1]["value"] == "abc"

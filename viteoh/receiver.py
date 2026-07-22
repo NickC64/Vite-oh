@@ -14,7 +14,6 @@ from viteoh.domain import ProposalStatus, ProposalTemplate
 from viteoh.repository import Repository
 from viteoh.security import SignatureVerifier
 from viteoh.tasks import TaskDispatcher
-from viteoh.templates import subject_max_length
 
 logger = logging.getLogger(__name__)
 
@@ -104,33 +103,20 @@ class InteractionReceiver:
         if path == ("proposal", "help"):
             return _message(HELP_TEXT)
         if path not in {
-            ("proposal", "create"),
             ("proposal", "delete"),
-            ("proposal", "template", "create"),
-            ("proposal", "template", "edit"),
-            ("proposal", "template", "delete"),
+            ("proposal", "type", "create"),
+            ("proposal", "type", "edit"),
+            ("proposal", "type", "delete"),
         }:
             return None
         if self.repository is None:
             return _message("The bot could not load this server's proposal settings.")
 
         guild_id = str(payload["guild_id"])
-        if path == ("proposal", "create"):
-            if not await self.repository.get_guild_config(guild_id):
-                return _message(
-                    "This server is not configured. A member with Manage Server "
-                    "must run `/proposal configure` first."
-                )
-            template_id = str(options.get("template") or "builtin:general")
-            template = await self.repository.get_template(guild_id, template_id)
-            if not template:
-                return _message("Select a valid proposal template from this server.")
-            return _proposal_modal(template)
-
         if not _is_admin(payload, self.settings.discord_owner_user_id):
             return _message("You need Manage Server permission to use this command.")
         if not await self.repository.get_guild_config(guild_id):
-            return _message("Run `/proposal configure` before managing templates.")
+            return _message("Run `/proposal configure` before managing proposal types.")
 
         if path == ("proposal", "delete"):
             proposal = await self.repository.get_proposal(
@@ -147,20 +133,18 @@ class InteractionReceiver:
                 delete_confirmation_buttons("proposal", proposal.id),
             )
 
-        if path == ("proposal", "template", "create"):
-            required = bool(options.get("context_required", False))
-            return _template_modal(None, required)
+        if path == ("proposal", "type", "create"):
+            return _template_modal(None)
 
         template = await self.repository.get_template(
-            guild_id, str(options.get("template", ""))
+            guild_id, str(options.get("type", ""))
         )
         if not template or template.builtin:
-            return _message("Select a valid custom template from this server.")
-        if path == ("proposal", "template", "edit"):
-            required = bool(options.get("context_required", template.context_required))
-            return _template_modal(template, required)
+            return _message("Select a valid custom proposal type from this server.")
+        if path == ("proposal", "type", "edit"):
+            return _template_modal(template)
         return _message(
-            f"Delete template **{template.name}**? "
+            f"Delete proposal type **{template.name}**? "
             "Existing proposals will be unchanged.",
             delete_confirmation_buttons("template", template.id),
         )
@@ -204,13 +188,13 @@ class InteractionReceiver:
                         for proposal in proposal_matches
                     ]
                 )
-            if (path == ("proposal", "create") and name == "template") or (
+            if (path == ("proposal", "create") and name == "type") or (
                 path
                 in {
-                    ("proposal", "template", "edit"),
-                    ("proposal", "template", "delete"),
+                    ("proposal", "type", "edit"),
+                    ("proposal", "type", "delete"),
                 }
-                and name == "template"
+                and name == "type"
             ):
                 templates = await self.repository.list_templates(guild_id)
                 if path != ("proposal", "create"):
@@ -262,26 +246,6 @@ def _choices(choices: list[dict[str, str]]) -> dict[str, Any]:
     return {"type": 8, "data": {"choices": choices}}
 
 
-def _proposal_modal(template: ProposalTemplate) -> dict[str, Any]:
-    return modal(
-        f"Create · {template.name}",
-        f"proposal-create|{template.id}",
-        text_input(
-            "subject",
-            template.subject_label,
-            required=True,
-            max_length=subject_max_length(template),
-        ),
-        text_input(
-            "context",
-            template.context_label,
-            required=template.context_required,
-            max_length=1000,
-            paragraph=True,
-        ),
-    )
-
-
 def _veto_modal(proposal_id: str) -> dict[str, Any]:
     return modal(
         "Submit anonymous veto",
@@ -296,17 +260,15 @@ def _veto_modal(proposal_id: str) -> dict[str, Any]:
     )
 
 
-def _template_modal(
-    template: ProposalTemplate | None, context_required: bool
-) -> dict[str, Any]:
+def _template_modal(template: ProposalTemplate | None) -> dict[str, Any]:
     action = "edit" if template else "create"
     template_id = template.id if template else "new"
     return modal(
-        f"{action.title()} proposal template",
-        f"template-{action}|{template_id}|{int(context_required)}",
+        f"{action.title()} proposal type",
+        f"template-{action}|{template_id}",
         text_input(
             "name",
-            "Template name",
+            "Type name",
             required=True,
             max_length=50,
             value=template.name if template else None,
@@ -317,26 +279,5 @@ def _template_modal(
             required=True,
             max_length=100,
             value=template.description if template else None,
-        ),
-        text_input(
-            "subject_label",
-            "Subject prompt",
-            required=True,
-            max_length=45,
-            value=template.subject_label if template else None,
-        ),
-        text_input(
-            "context_label",
-            "Context prompt",
-            required=True,
-            max_length=45,
-            value=template.context_label if template else None,
-        ),
-        text_input(
-            "title_format",
-            "Title format (use {subject})",
-            required=True,
-            max_length=100,
-            value=template.title_format if template else "{subject}",
         ),
     )

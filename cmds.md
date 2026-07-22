@@ -1,8 +1,9 @@
 # Bot Commands
 
-- `/proposal create [template]` — Open a guided proposal modal. Defaults to
-  General; New member is also built in.
-- `/proposal list` — View active proposals, template names, deadlines, and links.
+- `/proposal create <title> [type] [context]` — Create a proposal directly from
+  the command. The optional type appears above the unchanged title and defaults
+  to General.
+- `/proposal list` — View active proposals, type names, deadlines, and links.
 - `/proposal nudge <proposal> <user>` — Anonymously notify one member.
 - `/proposal preferences [new_proposals] [nudges]` — View or change your
   per-server notification preferences.
@@ -10,11 +11,11 @@
   (Manage Server).
 - `/proposal delete <proposal>` — Confirm deletion of an active proposal
   (Manage Server).
-- `/proposal template create [context_required]` — Create a guided template.
-- `/proposal template edit <template> [context_required]` — Edit a custom
-  template without changing existing proposals.
-- `/proposal template delete <template>` — Confirm deletion of a custom template.
-- `/proposal template list` — List built-in and custom templates.
+- `/proposal type create` — Create a custom proposal type.
+- `/proposal type edit <type>` — Edit a custom type without changing existing
+  proposals.
+- `/proposal type delete <type>` — Confirm deletion of a custom type.
+- `/proposal type list` — List built-in and custom proposal types.
 - `/proposal help` — Explain consent voting and available commands.
 
 Use **Veto** to submit an anonymous objection with an optional public reason,

@@ -16,7 +16,7 @@ from viteoh.domain import (
 )
 from viteoh.repository import Repository, normalize_title
 from viteoh.tasks import TaskDispatcher
-from viteoh.templates import format_title, validate_template_fields
+from viteoh.templates import validate_template_fields
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +106,14 @@ class InteractionProcessor:
                 )
                 for proposal in ordered
             )
+        if path == ("proposal", "create"):
+            template_id = str(options.get("type") or "builtin:general")
+            template = await self.repository.get_template(guild_id, template_id)
+            if not template:
+                return "Select a valid proposal type from this server."
+            title = str(options.get("title", ""))
+            context = str(options.get("context", "")).strip()
+            return await self._new(str(payload["id"]), title, context, template, config)
         if path == ("proposal", "preferences"):
             new_value = options.get("new_proposals")
             nudge_value = options.get("nudges")
@@ -133,9 +141,9 @@ class InteractionProcessor:
                 str(options.get("proposal", "")),
                 str(options.get("user", "")),
             )
-        if path == ("proposal", "template", "list"):
+        if path == ("proposal", "type", "list"):
             templates = await self.repository.list_templates(guild_id)
-            return "**Available proposal templates**\n" + "\n".join(
+            return "**Available proposal types**\n" + "\n".join(
                 f"• **{template.name}** — {template.description}"
                 + (" *(built-in)*" if template.builtin else "")
                 for template in templates
@@ -146,22 +154,6 @@ class InteractionProcessor:
         data = payload.get("data") or {}
         custom_id = str(data.get("custom_id", ""))
         values = modal_values(data)
-        if custom_id.startswith("proposal-create|"):
-            config = await self.repository.get_guild_config(guild_id)
-            if not config:
-                return "This server is no longer configured."
-            template_id = custom_id.removeprefix("proposal-create|")
-            template = await self.repository.get_template(guild_id, template_id)
-            if not template:
-                return "That proposal template no longer exists."
-            context = values.get("context", "").strip()
-            if template.context_required and not context:
-                return "This template requires proposal context."
-            try:
-                title = format_title(template, values.get("subject", ""))
-            except ValueError as exc:
-                return str(exc)
-            return await self._new(str(payload["id"]), title, context, template, config)
         if custom_id.startswith("proposal-veto|"):
             proposal_id = custom_id.removeprefix("proposal-veto|")
             reason = values.get("reason", "").strip()
@@ -173,32 +165,26 @@ class InteractionProcessor:
             return await self._veto(proposal, reason)
         if custom_id.startswith(("template-create|", "template-edit|")):
             if not self._is_admin(payload, user_id):
-                return "You need Manage Server permission to manage templates."
+                return "You need Manage Server permission to manage proposal types."
             if not await self.repository.get_guild_config(guild_id):
-                return "Run `/proposal configure` before managing templates."
+                return "Run `/proposal configure` before managing proposal types."
             parts = custom_id.split("|")
-            if len(parts) != 3:
-                return "This template form is no longer valid."
-            action, template_id, required_value = parts
+            if len(parts) != 2:
+                return "This proposal type form is no longer valid."
+            action, template_id = parts
             editing_id = template_id if action == "template-edit" else None
             if editing_id:
                 existing = await self.repository.get_template(guild_id, editing_id)
                 if not existing or existing.builtin:
-                    return "That custom template no longer exists."
+                    return "That custom proposal type no longer exists."
             try:
                 (
                     name,
                     normalized_name,
                     description,
-                    subject_label,
-                    context_label,
-                    title_format,
                 ) = validate_template_fields(
                     values.get("name", ""),
                     values.get("description", ""),
-                    values.get("subject_label", ""),
-                    values.get("context_label", ""),
-                    values.get("title_format", ""),
                 )
             except ValueError as exc:
                 return str(exc)
@@ -208,20 +194,22 @@ class InteractionProcessor:
                 name,
                 normalized_name,
                 description,
-                subject_label,
-                context_label,
-                title_format,
-                required_value == "1",
+                "Proposal title",
+                "Context",
+                "{subject}",
+                False,
                 user_id,
                 utcnow(),
             )
             if result.reason == "duplicate_name":
-                return "A custom template with that name already exists."
+                return "A custom proposal type with that name already exists."
             if result.reason == "limit":
-                return "This server already has the maximum of 20 custom templates."
+                return (
+                    "This server already has the maximum of 20 custom proposal types."
+                )
             if not result.changed or not result.template:
-                return "The template could not be saved."
-            return f"Template **{result.template.name}** has been {result.reason}."
+                return "The proposal type could not be saved."
+            return f"Proposal type **{result.template.name}** has been {result.reason}."
         return "This form is no longer valid."
 
     async def _setup(
@@ -439,12 +427,12 @@ class InteractionProcessor:
                 return await self._delete(guild_id, resource_id)
             template = await self.repository.get_template(guild_id, resource_id)
             if not template or template.builtin:
-                return "That custom template no longer exists."
+                return "That custom proposal type no longer exists."
             result = await self.repository.delete_template(guild_id, resource_id)
             return (
-                f"Template **{template.name}** has been deleted."
+                f"Proposal type **{template.name}** has been deleted."
                 if result.changed
-                else "That custom template no longer exists."
+                else "That custom proposal type no longer exists."
             )
         if scope != "proposal":
             return "This control is no longer valid."

@@ -32,16 +32,17 @@ with a Google-signed OIDC token, and Cloud Run IAM rejects every other caller.
 
 ## Commands
 
-- `/proposal create [template]` opens a guided proposal form. General and New
-  member templates are built in.
+- `/proposal create <title> [type] [context]` creates a proposal without a modal.
+  General and New member types are built in; the type labels the proposal while
+  leaving its title unchanged.
 - `/proposal list` links to active proposals and their deadlines.
 - `/proposal nudge <proposal> <user>` anonymously DMs one member.
 - `/proposal preferences [new_proposals] [nudges]` controls per-server DMs.
 - `/proposal configure [channel] [duration_minutes]` configures the server and
   requires Manage Server permission (or the bot-owner override).
 - `/proposal delete <proposal>` confirms and deletes an active proposal.
-- `/proposal template create|edit|delete|list` manages up to 20 guild-local
-  guided templates. Template mutations require Manage Server permission.
+- `/proposal type create|edit|delete|list` manages up to 20 guild-local proposal
+  types. Type mutations require Manage Server permission.
 - `/proposal help` explains the consent model and commands.
 
 Proposal messages provide **Veto**, **Acknowledge**, and **Subscribe** buttons.
@@ -51,9 +52,9 @@ identity is neither stored nor shown. Announcements are rich embeds. Terminal
 states update the canonical embed and create one reply so the channel receives
 fresh activity without losing its clean source of truth.
 
-Custom templates guide a subject and context field, optionally require context,
-and format titles with exactly one `{subject}` token. Proposals snapshot the
-template name, so later template edits or deletion never rewrite history.
+Custom proposal types contain a name and short description. The selected type is
+shown above the proposal title. Proposals snapshot the type name, so later type
+edits or deletion never rewrite history.
 
 The bot role needs **View Channel**, **Send Messages**, **Embed Links**, and
 **Read Message History** in the configured proposal channel. Private channels
@@ -146,7 +147,7 @@ ensuring the bot token never enters source control, Terraform state, or GitHub.
 7. Run `/proposal configure channel:#test-output duration_minutes:1` in the
    test server and `/proposal configure channel:#live-output
    duration_minutes:2880` in the live server.
-8. Smoke-test both built-ins, a custom template, autocomplete, preferences,
+8. Smoke-test both built-in types, a custom type, autocomplete, preferences,
    nudge, acknowledgement, an anonymous veto reason, terminal replies, and
    deletion independently in both servers.
 
@@ -187,7 +188,7 @@ SQLite bot cannot consume the new state safely.
 - Terminal outcome replies use deterministic nonces and durable message IDs;
   reconciliation retries incomplete canonical or outcome delivery.
 
-Terminal proposal records, public veto reasons, and template snapshots are
+Terminal proposal records, public veto reasons, and proposal type snapshots are
 retained for audit and idempotency. The vetoing user is not part of those
 records.
 

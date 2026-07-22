@@ -45,10 +45,12 @@ def command(
     options: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     if name == "new":
-        values = {str(item["name"]): item.get("value", "") for item in options or []}
+        command_options = list(options or [])
+        if not any(item["name"] == "title" for item in command_options):
+            command_options.insert(0, {"name": "title", "value": value})
         return {
             "id": interaction_id,
-            "type": 5,
+            "type": 2,
             "token": "token",
             "guild_id": guild_id,
             "member": {
@@ -56,25 +58,8 @@ def command(
                 "permissions": str(permissions),
             },
             "data": {
-                "custom_id": "proposal-create|builtin:general",
-                "components": [
-                    {
-                        "components": [
-                            {
-                                "custom_id": "subject",
-                                "value": str(values.get("title", value)),
-                            }
-                        ]
-                    },
-                    {
-                        "components": [
-                            {
-                                "custom_id": "context",
-                                "value": str(values.get("context", "")),
-                            }
-                        ]
-                    },
-                ],
+                "name": "proposal",
+                "options": [{"name": "create", "type": 1, "options": command_options}],
             },
         }
     if name == "delete":
@@ -286,7 +271,7 @@ async def test_unconfigured_guild_is_rejected_and_guilds_are_isolated(
 ) -> None:
     processor, repository, _, discord = system
     await processor.process(command("new", guild_id="guild-2", value="Alice"))
-    assert "no longer configured" in discord.responses[-1]
+    assert "has not been configured" in discord.responses[-1]
     now = utcnow()
     repository.guilds["guild-2"] = GuildConfig(
         guild_id="guild-2",
@@ -532,7 +517,7 @@ async def test_announcement_rendering_converges_when_finalize_races_ack(
     assert discord.synced[-1].status is ProposalStatus.PASSED
 
 
-async def test_custom_template_modal_creation_and_snapshot(
+async def test_custom_type_modal_creation_and_snapshot(
     system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
 ) -> None:
     processor, repository, _, discord = system
@@ -547,7 +532,7 @@ async def test_custom_template_modal_creation_and_snapshot(
                 "permissions": str(MANAGE_GUILD),
             },
             "data": {
-                "custom_id": "template-create|new|1",
+                "custom_id": "template-create|new",
                 "components": [
                     {"components": [{"custom_id": "name", "value": "Policy"}]},
                     {
@@ -555,50 +540,31 @@ async def test_custom_template_modal_creation_and_snapshot(
                             {"custom_id": "description", "value": "Change policy"}
                         ]
                     },
-                    {
-                        "components": [
-                            {"custom_id": "subject_label", "value": "What changes?"}
-                        ]
-                    },
-                    {"components": [{"custom_id": "context_label", "value": "Why?"}]},
-                    {
-                        "components": [
-                            {
-                                "custom_id": "title_format",
-                                "value": "Adopt {subject} as policy",
-                            }
-                        ]
-                    },
                 ],
             },
         }
     )
     template = next(iter(repository.templates.values()))
-    assert template.context_required
+    assert not template.context_required
     assert "created" in discord.responses[-1]
+    # Old custom types may still carry a former title format. It is ignored.
+    repository.templates[("guild", template.id)] = replace(
+        template, title_format="Adopt {subject} as policy"
+    )
 
     await processor.process(
-        {
-            "id": "proposal-create",
-            "type": 5,
-            "token": "token",
-            "guild_id": "guild",
-            "member": {"user": {"id": "user"}},
-            "data": {
-                "custom_id": f"proposal-create|{template.id}",
-                "components": [
-                    {"components": [{"custom_id": "subject", "value": "quiet hours"}]},
-                    {
-                        "components": [
-                            {"custom_id": "context", "value": "Reduce late pings"}
-                        ]
-                    },
-                ],
-            },
-        }
+        command(
+            "new",
+            interaction_id="proposal-create",
+            options=[
+                {"name": "title", "value": "quiet hours"},
+                {"name": "type", "value": template.id},
+                {"name": "context", "value": "Reduce late pings"},
+            ],
+        )
     )
     proposal = next(iter(repository.proposals.values()))
-    assert proposal.title == "Adopt quiet hours as policy"
+    assert proposal.title == "quiet hours"
     assert proposal.template_name == "Policy"
     await repository.save_template(
         "guild",

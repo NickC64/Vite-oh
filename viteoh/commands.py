@@ -28,15 +28,29 @@ COMMANDS: list[dict[str, object]] = [
         "options": [
             {
                 "name": "create",
-                "description": "Create a guided proposal",
+                "description": "Create a proposal",
                 "type": 1,
                 "options": [
                     _option(
-                        "template",
-                        "Proposal template (defaults to General)",
+                        "title",
+                        "Proposal title",
+                        3,
+                        required=True,
+                        min_length=1,
+                        max_length=100,
+                    ),
+                    _option(
+                        "type",
+                        "Proposal type shown above the title (defaults to General)",
                         3,
                         autocomplete=True,
-                    )
+                    ),
+                    _option(
+                        "context",
+                        "Optional background or details",
+                        3,
+                        max_length=1000,
+                    ),
                 ],
             },
             {"name": "list", "description": "List active proposals", "type": 1},
@@ -104,49 +118,37 @@ COMMANDS: list[dict[str, object]] = [
                 "type": 1,
             },
             {
-                "name": "template",
-                "description": "Manage this server's proposal templates",
+                "name": "type",
+                "description": "Manage this server's proposal types",
                 "type": 2,
                 "options": [
                     {
                         "name": "create",
-                        "description": "Create a custom template (Manage Server)",
+                        "description": "Create a custom type (Manage Server)",
                         "type": 1,
-                        "options": [
-                            _option(
-                                "context_required",
-                                "Require context when using this template",
-                                5,
-                            )
-                        ],
                     },
                     {
                         "name": "edit",
-                        "description": "Edit a custom template (Manage Server)",
+                        "description": "Edit a custom type (Manage Server)",
                         "type": 1,
                         "options": [
                             _option(
-                                "template",
-                                "Custom template to edit",
+                                "type",
+                                "Custom proposal type to edit",
                                 3,
                                 required=True,
                                 autocomplete=True,
-                            ),
-                            _option(
-                                "context_required",
-                                "Change whether context is required",
-                                5,
                             ),
                         ],
                     },
                     {
                         "name": "delete",
-                        "description": "Delete a custom template (Manage Server)",
+                        "description": "Delete a custom type (Manage Server)",
                         "type": 1,
                         "options": [
                             _option(
-                                "template",
-                                "Custom template to delete",
+                                "type",
+                                "Custom proposal type to delete",
                                 3,
                                 required=True,
                                 autocomplete=True,
@@ -155,7 +157,7 @@ COMMANDS: list[dict[str, object]] = [
                     },
                     {
                         "name": "list",
-                        "description": "List built-in and custom templates",
+                        "description": "List built-in and custom proposal types",
                         "type": 1,
                     },
                 ],
@@ -170,13 +172,13 @@ HELP_TEXT = """**Vite-oh proposals**
 Proposals pass at their fixed deadline unless a server member anonymously vetoes.
 Acknowledgement records only that you saw a proposal; it is not a vote of support.
 
-`/proposal create [template]` — Open a guided proposal form.
+`/proposal create <title> [type] [context]` — Create a typed proposal.
 `/proposal list` — List active proposals.
 `/proposal nudge <proposal> <user>` — Anonymously notify one member.
 `/proposal preferences` — View or change notifications and nudges.
 `/proposal configure` — Configure this server (Manage Server).
 `/proposal delete <proposal>` — Delete a proposal (Manage Server).
-`/proposal template ...` — Manage guided templates.
+`/proposal type ...` — Manage proposal types.
 `/proposal help` — Show this help."""
 
 

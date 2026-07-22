@@ -21,9 +21,9 @@ Run `/proposal configure channel:#test-output duration_minutes:1` in the
 testing guild.
 
 1. Create General and New member proposals and confirm their embeds contain the
-   template, formatted title, context, deadline, and zero acknowledgements.
-2. Create, edit, use, and delete a custom template. Confirm the created
-   proposal retains its original template snapshot.
+   type, unchanged title, context, deadline, and zero acknowledgements.
+2. Create, edit, use, and delete a custom proposal type. Confirm the created
+   proposal retains its original type snapshot.
 3. Enable new-proposal DMs in `/proposal preferences` and confirm a DM arrives.
 4. Redeploy the worker or allow it to scale back to zero.
 5. Confirm the proposal passes without its deadline changing and produces one
@@ -54,8 +54,8 @@ guild. A later configuration change affects only proposals created afterward.
 4. Stop the old Gateway process.
 5. Install the same application in every guild using the `bot` and
    `applications.commands` scopes.
-6. Exercise every `/proposal` subcommand, both built-in templates, one custom
-   template, Acknowledge, Subscribe, Veto with reason, and each terminal outcome
+6. Exercise every `/proposal` subcommand, both built-in types, one custom type,
+   Acknowledge, Subscribe, Veto with reason, and each terminal outcome
    independently in test and live guilds.
 
 ## Recovery

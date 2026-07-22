@@ -82,7 +82,7 @@ async def test_veto_prompts_without_worker(
     assert not tasks.interactions
 
 
-async def test_create_command_opens_template_modal_immediately() -> None:
+async def test_create_command_is_deferred_without_opening_a_modal() -> None:
     key = SigningKey.generate()
     repository = FakeRepository()
     now = utcnow()
@@ -106,19 +106,21 @@ async def test_create_command_opens_template_modal_immediately() -> None:
             "member": {"user": {"id": "user"}},
             "data": {
                 "name": "proposal",
-                "options": [{"name": "create", "type": 1, "options": []}],
+                "options": [
+                    {
+                        "name": "create",
+                        "type": 1,
+                        "options": [{"name": "title", "value": "Quiet hours"}],
+                    }
+                ],
             },
         },
     )
-    assert response["type"] == 9
-    assert response["data"]["custom_id"] == "proposal-create|builtin:general"
-    assert response["data"]["components"][0]["components"][0]["label"] == (
-        "Proposal title"
-    )
-    assert not tasks.interactions
+    assert response["type"] == 5
+    assert tasks.interactions[0]["id"] == "create"
 
 
-async def test_template_autocomplete_and_admin_delete_confirmation() -> None:
+async def test_type_autocomplete_and_admin_delete_confirmation() -> None:
     key = SigningKey.generate()
     repository = FakeRepository()
     now = utcnow()
@@ -157,7 +159,7 @@ async def test_template_autocomplete_and_admin_delete_confirmation() -> None:
                 "name": "proposal",
                 "options": [
                     {
-                        "name": "template",
+                        "name": "type",
                         "type": 2,
                         "options": [
                             {
@@ -165,7 +167,7 @@ async def test_template_autocomplete_and_admin_delete_confirmation() -> None:
                                 "type": 1,
                                 "options": [
                                     {
-                                        "name": "template",
+                                        "name": "type",
                                         "value": "pol",
                                         "focused": True,
                                     }
@@ -194,14 +196,14 @@ async def test_template_autocomplete_and_admin_delete_confirmation() -> None:
                 "name": "proposal",
                 "options": [
                     {
-                        "name": "template",
+                        "name": "type",
                         "type": 2,
                         "options": [
                             {
                                 "name": "delete",
                                 "type": 1,
                                 "options": [
-                                    {"name": "template", "value": saved.template.id}
+                                    {"name": "type", "value": saved.template.id}
                                 ],
                             }
                         ],
