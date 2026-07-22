@@ -14,8 +14,11 @@ logger = logging.getLogger(__name__)
 ADMINISTRATOR = 1 << 3
 VIEW_CHANNEL = 1 << 10
 SEND_MESSAGES = 1 << 11
+EMBED_LINKS = 1 << 14
 READ_MESSAGE_HISTORY = 1 << 16
-REQUIRED_OUTPUT_PERMISSIONS = VIEW_CHANNEL | SEND_MESSAGES | READ_MESSAGE_HISTORY
+REQUIRED_OUTPUT_PERMISSIONS = (
+    VIEW_CHANNEL | SEND_MESSAGES | EMBED_LINKS | READ_MESSAGE_HISTORY
+)
 SUPPORTED_OUTPUT_CHANNEL_TYPES = {0, 5}
 
 
@@ -203,8 +206,8 @@ class DiscordClient:
         if missing:
             raise DiscordAPIError(
                 403,
-                "I need View Channel, Send Messages, and Read Message History "
-                "permissions in the selected channel.",
+                "I need View Channel, Send Messages, Embed Links, and "
+                "Read Message History permissions in the selected channel.",
             )
         return str(guild.get("name") or guild_id)
 

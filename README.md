@@ -55,6 +55,11 @@ Custom templates guide a subject and context field, optionally require context,
 and format titles with exactly one `{subject}` token. Proposals snapshot the
 template name, so later template edits or deletion never rewrite history.
 
+The bot role needs **View Channel**, **Send Messages**, **Embed Links**, and
+**Read Message History** in the configured proposal channel. Private channels
+must grant these permissions explicitly before Discord will offer the channel
+and the bot can post its rich proposal embeds.
+
 ## Local development
 
 Python 3.13 and [uv](https://docs.astral.sh/uv/) are required.

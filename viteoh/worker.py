@@ -324,6 +324,17 @@ class InteractionProcessor:
             except DiscordAPIError as exc:
                 if exc.retryable:
                     raise
+                failure_message = (
+                    "I could not post in the configured proposal channel. "
+                    "Run `/proposal configure` after fixing my channel permissions."
+                )
+                try:
+                    await self.discord.validate_output_channel(
+                        proposal.guild_id, proposal.output_channel_id
+                    )
+                except DiscordAPIError as validation_error:
+                    if not validation_error.retryable:
+                        failure_message = str(validation_error)
                 transition_result = await self.repository.transition(
                     proposal.id, ProposalStatus.DELETED, utcnow()
                 )
@@ -331,10 +342,7 @@ class InteractionProcessor:
                 if transition_result.proposal:
                     await self.repository.mark_announcement_synced(proposal.id)
                     await self.repository.mark_effects_complete(proposal.id)
-                return (
-                    "I could not post in the configured proposal channel. "
-                    "Run `/proposal configure` after fixing my channel permissions."
-                )
+                return failure_message
             proposal = (
                 await self.repository.set_message_id(proposal.id, message_id)
                 or proposal

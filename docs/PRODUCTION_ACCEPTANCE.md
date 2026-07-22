@@ -6,12 +6,14 @@ Interaction Endpoint URL.
 ## Infrastructure
 
 1. Confirm both Cloud Run services are healthy.
-2. Confirm `viteoh-interactions` has one minimum instance and the worker has
+2. Confirm the bot has View Channel, Send Messages, Embed Links, and Read
+   Message History in each configured proposal channel.
+3. Confirm `viteoh-interactions` has one minimum instance and the worker has
    zero minimum instances.
-3. Confirm the worker rejects an unauthenticated request to `/tasks/reconcile`.
-4. Execute the command-registration job and confirm the single global
+4. Confirm the worker rejects an unauthenticated request to `/tasks/reconcile`.
+5. Execute the command-registration job and confirm the single global
    `/proposal` command and all nested subcommands.
-5. Confirm the Scheduler job can invoke reconciliation successfully.
+6. Confirm the Scheduler job can invoke reconciliation successfully.
 
 ## Short deadline smoke test
 

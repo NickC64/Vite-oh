@@ -6,6 +6,7 @@ import pytest
 
 from viteoh.config import Settings
 from viteoh.discord_api import (
+    EMBED_LINKS,
     READ_MESSAGE_HISTORY,
     SEND_MESSAGES,
     VIEW_CHANNEL,
@@ -112,7 +113,7 @@ async def test_discord_error_classifies_retryability() -> None:
 
 
 async def test_validate_output_channel_checks_guild_type_and_permissions() -> None:
-    required = VIEW_CHANNEL | SEND_MESSAGES | READ_MESSAGE_HISTORY
+    required = VIEW_CHANNEL | SEND_MESSAGES | EMBED_LINKS | READ_MESSAGE_HISTORY
 
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -166,5 +167,44 @@ async def test_validate_output_channel_rejects_cross_guild_channel() -> None:
         httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
     with pytest.raises(DiscordAPIError, match="not in this server"):
+        await client.validate_output_channel("guild", "channel")
+    await client.close()
+
+
+async def test_validate_output_channel_requires_embed_links() -> None:
+    permissions = VIEW_CHANNEL | SEND_MESSAGES | READ_MESSAGE_HISTORY
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/channels/channel"):
+            return httpx.Response(
+                200,
+                json={
+                    "guild_id": "guild",
+                    "type": 0,
+                    "permission_overwrites": [],
+                },
+            )
+        if path.endswith("/users/@me"):
+            return httpx.Response(200, json={"id": "bot"})
+        if path.endswith("/guilds/guild/members/bot"):
+            return httpx.Response(200, json={"roles": ["bot-role"]})
+        if path.endswith("/guilds/guild/roles"):
+            return httpx.Response(
+                200,
+                json=[
+                    {"id": "guild", "permissions": "0"},
+                    {"id": "bot-role", "permissions": str(permissions)},
+                ],
+            )
+        if path.endswith("/guilds/guild"):
+            return httpx.Response(200, json={"name": "Test Guild"})
+        raise AssertionError(path)
+
+    client = DiscordClient(
+        Settings(discord_api_base_url="https://discord.test"),
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(DiscordAPIError, match="Embed Links"):
         await client.validate_output_channel("guild", "channel")
     await client.close()
