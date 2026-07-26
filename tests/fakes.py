@@ -9,14 +9,14 @@ from viteoh.domain import (
     Proposal,
     ProposalActionResult,
     ProposalStatus,
-    ProposalTemplate,
-    TemplateMutationResult,
+    ProposalType,
     TransitionResult,
+    TypeMutationResult,
     WorkspaceJob,
     WorkspaceLaunch,
 )
+from viteoh.proposal_types import BUILTIN_TYPES, MAX_CUSTOM_TYPES, builtin_type
 from viteoh.repository import reservation_id
-from viteoh.templates import BUILTIN_TEMPLATES, MAX_CUSTOM_TEMPLATES, builtin_template
 
 
 class FakeRepository:
@@ -30,7 +30,7 @@ class FakeRepository:
         self.acknowledgements: dict[str, set[str]] = {}
         self.nudges: dict[str, dict[str, str]] = {}
         self.nudge_preferences: dict[tuple[str, str], bool] = {}
-        self.templates: dict[tuple[str, str], ProposalTemplate] = {}
+        self.types: dict[tuple[str, str], ProposalType] = {}
         self.workspace_jobs: dict[str, WorkspaceJob] = {}
         self.workspace_launches: dict[str, WorkspaceLaunch] = {}
         self.lock = asyncio.Lock()
@@ -76,8 +76,8 @@ class FakeRepository:
         title: str,
         normalized_title: str,
         context: str,
-        template_id: str,
-        template_name: str,
+        type_id: str,
+        type_name: str,
         created_at: datetime,
         deadline_at: datetime,
     ) -> CreateProposalResult:
@@ -105,8 +105,8 @@ class FakeRepository:
                 status=ProposalStatus.ACTIVE,
                 created_at=created_at,
                 deadline_at=deadline_at,
-                template_id=template_id,
-                template_name=template_name,
+                type_id=type_id,
+                type_name=type_name,
             )
             self.proposals[proposal.id] = proposal
             self.interactions[interaction_id] = proposal.id
@@ -133,6 +133,7 @@ class FakeRepository:
         self,
         guild_id: str,
         *,
+        archived: bool = False,
         limit: int = 50,
         before: datetime | None = None,
     ) -> list[Proposal]:
@@ -141,11 +142,72 @@ class FakeRepository:
                 proposal
                 for proposal in self.proposals.values()
                 if proposal.guild_id == guild_id
+                and proposal.archived is archived
                 and (before is None or proposal.created_at < before)
             ),
             key=lambda proposal: proposal.created_at,
             reverse=True,
         )[:limit]
+
+    async def archive_proposal(
+        self, proposal_id: str, guild_id: str, user_id: str, now: datetime
+    ) -> ProposalActionResult:
+        proposal = self.proposals.get(proposal_id)
+        if not proposal or proposal.guild_id != guild_id:
+            return ProposalActionResult(None, False, "not_found")
+        if proposal.status is ProposalStatus.ACTIVE:
+            return ProposalActionResult(proposal, False, "active")
+        if not proposal.effects_complete:
+            return ProposalActionResult(proposal, False, "effects_pending")
+        if proposal.archived:
+            return ProposalActionResult(proposal, False, "already_archived")
+        proposal = replace(
+            proposal,
+            archived=True,
+            archived_at=now,
+            archived_by=user_id,
+        )
+        self.proposals[proposal_id] = proposal
+        return ProposalActionResult(proposal, True, "archived")
+
+    async def purge_archived_proposal(
+        self, proposal_id: str, guild_id: str
+    ) -> ProposalActionResult:
+        proposal = self.proposals.get(proposal_id)
+        if not proposal or proposal.guild_id != guild_id:
+            return ProposalActionResult(None, False, "not_found")
+        if not proposal.archived or proposal.status is ProposalStatus.ACTIVE:
+            return ProposalActionResult(proposal, False, "not_archived")
+        if not proposal.effects_complete:
+            return ProposalActionResult(proposal, False, "effects_pending")
+        del self.proposals[proposal_id]
+        self.acknowledgements.pop(proposal_id, None)
+        self.nudges.pop(proposal_id, None)
+        self.subscribers.pop(proposal_id, None)
+        self.delivered = {item for item in self.delivered if item[0] != proposal_id}
+        self.interactions = {
+            interaction_id: item_proposal_id
+            for interaction_id, item_proposal_id in self.interactions.items()
+            if item_proposal_id != proposal_id
+        }
+        return ProposalActionResult(proposal, True, "purged")
+
+    async def restore_archived_proposal(
+        self, proposal_id: str, guild_id: str
+    ) -> ProposalActionResult:
+        proposal = self.proposals.get(proposal_id)
+        if not proposal or proposal.guild_id != guild_id:
+            return ProposalActionResult(None, False, "not_found")
+        if not proposal.archived:
+            return ProposalActionResult(proposal, False, "not_archived")
+        proposal = replace(
+            proposal,
+            archived=False,
+            archived_at=None,
+            archived_by="",
+        )
+        self.proposals[proposal_id] = proposal
+        return ProposalActionResult(proposal, True, "restored")
 
     async def list_pending_terminal_effects(self) -> list[Proposal]:
         return [
@@ -155,84 +217,77 @@ class FakeRepository:
             and not proposal.effects_complete
         ]
 
-    async def get_template(
-        self, guild_id: str, template_id: str
-    ) -> ProposalTemplate | None:
-        builtin = builtin_template(template_id)
+    async def get_type(self, guild_id: str, type_id: str) -> ProposalType | None:
+        builtin = builtin_type(type_id)
         return (
             replace(builtin, guild_id=guild_id)
             if builtin
-            else self.templates.get((guild_id, template_id))
+            else self.types.get((guild_id, type_id))
         )
 
-    async def list_templates(self, guild_id: str) -> list[ProposalTemplate]:
+    async def list_types(self, guild_id: str) -> list[ProposalType]:
         return [
-            *(replace(template, guild_id=guild_id) for template in BUILTIN_TEMPLATES),
+            *(
+                replace(proposal_type, guild_id=guild_id)
+                for proposal_type in BUILTIN_TYPES
+            ),
             *sorted(
                 (
-                    template
-                    for (item_guild, _), template in self.templates.items()
+                    proposal_type
+                    for (item_guild, _), proposal_type in self.types.items()
                     if item_guild == guild_id
                 ),
-                key=lambda template: template.normalized_name,
+                key=lambda proposal_type: proposal_type.normalized_name,
             ),
         ]
 
-    async def save_template(
+    async def save_type(
         self,
         guild_id: str,
-        template_id: str | None,
+        type_id: str | None,
         name: str,
         normalized_name: str,
         description: str,
-        subject_label: str,
-        context_label: str,
-        title_format: str,
-        context_required: bool,
         user_id: str,
         now: datetime,
-    ) -> TemplateMutationResult:
-        existing = self.templates.get((guild_id, template_id or ""))
+    ) -> TypeMutationResult:
+        existing = self.types.get((guild_id, type_id or ""))
         custom = [
             item
-            for (item_guild, _), item in self.templates.items()
+            for (item_guild, _), item in self.types.items()
             if item_guild == guild_id
         ]
-        if not existing and len(custom) >= MAX_CUSTOM_TEMPLATES:
-            return TemplateMutationResult(None, False, "limit")
+        if not existing and len(custom) >= MAX_CUSTOM_TYPES:
+            return TypeMutationResult(None, False, "limit")
         if any(
             item.normalized_name == normalized_name
             and (not existing or item.id != existing.id)
             for item in custom
         ):
-            return TemplateMutationResult(None, False, "duplicate_name")
-        template_id = template_id or f"87654321-4321-4321-4321-{len(custom):012d}"
-        template = ProposalTemplate(
-            id=template_id,
+            return TypeMutationResult(None, False, "duplicate_name")
+        type_id = type_id or f"87654321-4321-4321-4321-{len(custom):012d}"
+        proposal_type = ProposalType(
+            id=type_id,
             guild_id=guild_id,
             name=name,
             normalized_name=normalized_name,
             description=description,
-            subject_label=subject_label,
-            context_label=context_label,
-            title_format=title_format,
-            context_required=context_required,
             created_by=existing.created_by if existing else user_id,
             updated_by=user_id,
             created_at=existing.created_at if existing else now,
             updated_at=now,
         )
-        self.templates[(guild_id, template_id)] = template
-        return TemplateMutationResult(
-            template, True, "updated" if existing else "created"
+        self.types[(guild_id, type_id)] = proposal_type
+        return TypeMutationResult(
+            proposal_type, True, "updated" if existing else "created"
         )
 
-    async def delete_template(
-        self, guild_id: str, template_id: str
-    ) -> TemplateMutationResult:
-        template = self.templates.pop((guild_id, template_id), None)
-        return TemplateMutationResult(
-            template, bool(template), "deleted" if template else "not_found"
+    async def delete_type(self, guild_id: str, type_id: str) -> TypeMutationResult:
+        proposal_type = self.types.pop((guild_id, type_id), None)
+        return TypeMutationResult(
+            proposal_type,
+            bool(proposal_type),
+            "deleted" if proposal_type else "not_found",
         )
 
     async def mark_task_scheduled(
@@ -512,6 +567,7 @@ class FakeDiscord:
         self.announcements: list[Proposal] = []
         self.synced: list[Proposal] = []
         self.outcomes: list[Proposal] = []
+        self.deleted_history: list[Proposal] = []
         self.dms: list[tuple[str, str]] = []
         self.dm_failures: set[str] = set()
         self.channels: dict[str, tuple[str, str]] = {
@@ -545,6 +601,9 @@ class FakeDiscord:
     async def create_outcome_reply(self, proposal: Proposal) -> str:
         self.outcomes.append(proposal)
         return "outcome-999"
+
+    async def delete_proposal_history_messages(self, proposal: Proposal) -> None:
+        self.deleted_history.append(proposal)
 
     async def get_guild_member(self, guild_id: str, user_id: str) -> dict[str, object]:
         from viteoh.discord_api import DiscordAPIError

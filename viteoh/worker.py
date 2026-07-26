@@ -15,12 +15,12 @@ from viteoh.domain import (
     GuildConfig,
     Proposal,
     ProposalStatus,
-    ProposalTemplate,
+    ProposalType,
     utcnow,
 )
+from viteoh.proposal_types import validate_type_fields
 from viteoh.repository import Repository, normalize_title
 from viteoh.tasks import TaskDispatcher
-from viteoh.templates import validate_template_fields
 from viteoh.workspace_security import SignedTokenCodec
 
 logger = logging.getLogger(__name__)
@@ -122,19 +122,24 @@ class InteractionProcessor:
             return "**Active proposals**\n" + "\n".join(
                 (
                     f"• [{proposal.title}]({_proposal_link(proposal)}) "
-                    f"· {proposal.template_name} · "
+                    + (f"· {proposal.type_name} " if proposal.type_name else "")
+                    + "· "
                     f"<t:{int(proposal.deadline_at.timestamp())}:R>"
                 )
                 for proposal in ordered
             )
         if path == ("proposal", "create"):
-            template_id = str(options.get("type") or "builtin:general")
-            template = await self.repository.get_template(guild_id, template_id)
-            if not template:
+            type_id = str(options.get("type") or "")
+            proposal_type = (
+                await self.repository.get_type(guild_id, type_id) if type_id else None
+            )
+            if type_id and not proposal_type:
                 return "Select a valid proposal type from this server."
             title = str(options.get("title", ""))
             context = str(options.get("context", "")).strip()
-            return await self._new(str(payload["id"]), title, context, template, config)
+            return await self._new(
+                str(payload["id"]), title, context, proposal_type, config
+            )
         if path == ("proposal", "preferences"):
             new_value = options.get("new_proposals")
             nudge_value = options.get("nudges")
@@ -163,11 +168,11 @@ class InteractionProcessor:
                 str(options.get("user", "")),
             )
         if path == ("proposal", "type", "list"):
-            templates = await self.repository.list_templates(guild_id)
+            proposal_types = await self.repository.list_types(guild_id)
             return "**Available proposal types**\n" + "\n".join(
-                f"• **{template.name}** — {template.description}"
-                + (" *(built-in)*" if template.builtin else "")
-                for template in templates
+                f"• **{proposal_type.name}** — {proposal_type.description}"
+                + (" *(built-in)*" if proposal_type.builtin else "")
+                for proposal_type in proposal_types
             )
         return "Unknown command."
 
@@ -184,7 +189,7 @@ class InteractionProcessor:
             if not proposal:
                 return "This proposal is no longer active."
             return await self._veto(proposal, reason)
-        if custom_id.startswith(("template-create|", "template-edit|")):
+        if custom_id.startswith(("type-create|", "type-edit|")):
             if not self._is_admin(payload, user_id):
                 return "You need Manage Server permission to manage proposal types."
             if not await self.repository.get_guild_config(guild_id):
@@ -192,10 +197,10 @@ class InteractionProcessor:
             parts = custom_id.split("|")
             if len(parts) != 2:
                 return "This proposal type form is no longer valid."
-            action, template_id = parts
-            editing_id = template_id if action == "template-edit" else None
+            action, type_id = parts
+            editing_id = type_id if action == "type-edit" else None
             if editing_id:
-                existing = await self.repository.get_template(guild_id, editing_id)
+                existing = await self.repository.get_type(guild_id, editing_id)
                 if not existing or existing.builtin:
                     return "That custom proposal type no longer exists."
             try:
@@ -203,22 +208,18 @@ class InteractionProcessor:
                     name,
                     normalized_name,
                     description,
-                ) = validate_template_fields(
+                ) = validate_type_fields(
                     values.get("name", ""),
                     values.get("description", ""),
                 )
             except ValueError as exc:
                 return str(exc)
-            result = await self.repository.save_template(
+            result = await self.repository.save_type(
                 guild_id,
                 editing_id,
                 name,
                 normalized_name,
                 description,
-                "Proposal title",
-                "Context",
-                "{subject}",
-                False,
                 user_id,
                 utcnow(),
             )
@@ -228,9 +229,12 @@ class InteractionProcessor:
                 return (
                     "This server already has the maximum of 20 custom proposal types."
                 )
-            if not result.changed or not result.template:
+            if not result.changed or not result.proposal_type:
                 return "The proposal type could not be saved."
-            return f"Proposal type **{result.template.name}** has been {result.reason}."
+            return (
+                f"Proposal type **{result.proposal_type.name}** "
+                f"has been {result.reason}."
+            )
         return "This form is no longer valid."
 
     async def _setup(
@@ -292,7 +296,7 @@ class InteractionProcessor:
         interaction_id: str,
         title: str,
         context: str,
-        template: ProposalTemplate,
+        proposal_type: ProposalType | None,
         config: GuildConfig,
     ) -> str:
         title = " ".join(title.split())
@@ -313,8 +317,8 @@ class InteractionProcessor:
             title,
             normalized,
             context,
-            template.id,
-            template.name,
+            proposal_type.id if proposal_type else "",
+            proposal_type.name if proposal_type else "",
             now,
             deadline,
         )
@@ -457,12 +461,12 @@ class InteractionProcessor:
                 return "You need Manage Server permission to delete this."
             if scope == "proposal":
                 return await self._delete(guild_id, resource_id)
-            template = await self.repository.get_template(guild_id, resource_id)
-            if not template or template.builtin:
+            proposal_type = await self.repository.get_type(guild_id, resource_id)
+            if not proposal_type or proposal_type.builtin:
                 return "That custom proposal type no longer exists."
-            result = await self.repository.delete_template(guild_id, resource_id)
+            result = await self.repository.delete_type(guild_id, resource_id)
             return (
-                f"Proposal type **{template.name}** has been deleted."
+                f"Proposal type **{proposal_type.name}** has been deleted."
                 if result.changed
                 else "That custom proposal type no longer exists."
             )
@@ -552,6 +556,32 @@ class InteractionProcessor:
         )
         return access
 
+    async def workspace_guild_summaries(
+        self, guild_ids: list[str], user_id: str
+    ) -> dict[str, Any]:
+        summaries: list[dict[str, Any]] = []
+        for guild_id in dict.fromkeys(guild_ids):
+            try:
+                access = await self.workspace_access(guild_id, user_id)
+            except DiscordAPIError:
+                logger.info(
+                    "Omitting inaccessible workspace guild",
+                    extra={"guild_id": guild_id},
+                )
+                continue
+            config = await self.repository.get_guild_config(guild_id)
+            summaries.append(
+                {
+                    "guild_id": guild_id,
+                    "guild_name": str(access.get("guild_name") or guild_id),
+                    "guild_icon_hash": str(access.get("guild_icon_hash") or ""),
+                    "configured": config is not None,
+                    "can_manage": bool(access.get("can_manage")),
+                }
+            )
+        summaries.sort(key=lambda item: str(item["guild_name"]).casefold())
+        return {"guilds": summaries}
+
     async def process_workspace(self, payload: dict[str, Any]) -> None:
         job_id = str(payload.get("id", ""))
         guild_id = str(payload.get("guild_id", ""))
@@ -584,6 +614,7 @@ class InteractionProcessor:
                 guild_id,
                 user_id,
                 access,
+                retrying=existing_job is not None,
             )
             status = "succeeded"
         except DiscordAPIError as exc:
@@ -614,6 +645,8 @@ class InteractionProcessor:
         guild_id: str,
         user_id: str,
         access: dict[str, Any],
+        *,
+        retrying: bool = False,
     ) -> tuple[str, str | None]:
         config = await self.repository.get_guild_config(guild_id)
         is_admin = bool(access.get("can_manage"))
@@ -625,16 +658,17 @@ class InteractionProcessor:
                 raise ValueError("This server must be configured first.")
             if config.output_channel_id not in visible_channels:
                 raise PermissionError("You cannot view this server's proposal channel.")
-            template = await self.repository.get_template(
-                guild_id, str(data.get("type_id") or "builtin:general")
+            type_id = str(data.get("type_id") or "")
+            proposal_type = (
+                await self.repository.get_type(guild_id, type_id) if type_id else None
             )
-            if not template:
+            if type_id and not proposal_type:
                 raise ValueError("That proposal type no longer exists.")
             message = await self._new(
                 f"web:{job_id}",
                 str(data.get("title", "")),
                 str(data.get("context", "")),
-                template,
+                proposal_type,
                 config,
             )
             proposal = await self.repository.get_proposal_for_interaction(
@@ -687,46 +721,97 @@ class InteractionProcessor:
             if proposal.output_channel_id not in visible_channels:
                 raise PermissionError("You cannot view that proposal's channel.")
             return await self._delete(guild_id, proposal_id), proposal_id
+        if action == "archive":
+            proposal_id = str(data.get("proposal_id", ""))
+            proposal = await self.repository.get_proposal(proposal_id)
+            if not proposal or proposal.guild_id != guild_id:
+                raise ValueError("That proposal no longer exists.")
+            if proposal.output_channel_id not in visible_channels:
+                raise PermissionError("You cannot view that proposal's channel.")
+            archive_result = await self.repository.archive_proposal(
+                proposal_id, guild_id, user_id, utcnow()
+            )
+            if archive_result.reason == "active":
+                raise ValueError("Active proposals cannot be archived.")
+            if archive_result.reason == "effects_pending":
+                raise ValueError(
+                    "This proposal is still finishing its Discord notifications. "
+                    "Try again shortly."
+                )
+            if (
+                not archive_result.changed
+                and archive_result.reason != "already_archived"
+            ):
+                raise ValueError("That proposal could not be archived.")
+            return "The proposal was moved to the archive.", proposal_id
+        if action == "purge":
+            proposal_id = str(data.get("proposal_id", ""))
+            proposal = await self.repository.get_proposal(proposal_id)
+            if not proposal and retrying:
+                return "The archived proposal was permanently deleted.", None
+            if not proposal or proposal.guild_id != guild_id:
+                raise ValueError("That proposal no longer exists.")
+            if proposal.output_channel_id not in visible_channels:
+                raise PermissionError("You cannot view that proposal's channel.")
+            if not proposal.archived:
+                raise ValueError("Archive this proposal before deleting it.")
+            await self.discord.delete_proposal_history_messages(proposal)
+            purge_result = await self.repository.purge_archived_proposal(
+                proposal_id, guild_id
+            )
+            if not purge_result.changed:
+                raise ValueError("That archived proposal could not be deleted.")
+            return "The archived proposal was permanently deleted.", None
+        if action == "restore":
+            proposal_id = str(data.get("proposal_id", ""))
+            proposal = await self.repository.get_proposal(proposal_id)
+            if not proposal or proposal.guild_id != guild_id:
+                raise ValueError("That proposal no longer exists.")
+            if proposal.output_channel_id not in visible_channels:
+                raise PermissionError("You cannot view that proposal's channel.")
+            restore_result = await self.repository.restore_archived_proposal(
+                proposal_id, guild_id
+            )
+            if not restore_result.changed:
+                raise ValueError("That proposal is not archived.")
+            return "The proposal was restored to the main history.", proposal_id
         if action == "type_save":
             submitted_type_id = str(data.get("type_id") or "") or None
             if submitted_type_id:
-                existing = await self.repository.get_template(
-                    guild_id, submitted_type_id
-                )
+                existing = await self.repository.get_type(guild_id, submitted_type_id)
                 if not existing or existing.builtin:
                     raise ValueError("That custom proposal type no longer exists.")
             type_id = submitted_type_id or job_id
-            name, normalized_name, description = validate_template_fields(
+            name, normalized_name, description = validate_type_fields(
                 str(data.get("name", "")),
                 str(data.get("description", "")),
             )
-            result = await self.repository.save_template(
+            type_result = await self.repository.save_type(
                 guild_id,
                 type_id,
                 name,
                 normalized_name,
                 description,
-                "Proposal title",
-                "Context",
-                "{subject}",
-                False,
                 user_id,
                 utcnow(),
             )
-            if not result.changed or not result.template:
+            if not type_result.changed or not type_result.proposal_type:
                 reason = {
                     "duplicate_name": "A proposal type with that name exists.",
                     "limit": "This server already has 20 custom proposal types.",
-                }.get(result.reason, "The proposal type could not be saved.")
+                }.get(type_result.reason, "The proposal type could not be saved.")
                 raise ValueError(reason)
-            return f"Proposal type “{result.template.name}” was saved.", None
+            return (
+                f"Proposal type “{type_result.proposal_type.name}” was saved.",
+                None,
+            )
         if action == "type_delete":
             type_id = str(data.get("type_id", ""))
-            existing = await self.repository.get_template(guild_id, type_id)
+            existing = await self.repository.get_type(guild_id, type_id)
             if not existing or existing.builtin:
                 raise ValueError("That custom proposal type no longer exists.")
-            result = await self.repository.delete_template(guild_id, type_id)
-            if not result.changed:
+            delete_type_result = await self.repository.delete_type(guild_id, type_id)
+            if not delete_type_result.changed:
                 raise ValueError("That custom proposal type no longer exists.")
             return f"Proposal type “{existing.name}” was deleted.", None
         raise ValueError("This workspace action is not supported.")
@@ -941,13 +1026,14 @@ def _proposal_link(proposal: Proposal) -> str:
 
 def _proposal_details(proposal: Proposal) -> str:
     context = f"\n{proposal.context}" if proposal.context else ""
+    proposal_type = f" · {proposal.type_name}" if proposal.type_name else ""
     reason = (
         f"\nAnonymous veto reason: {proposal.veto_reason}"
         if proposal.status is ProposalStatus.VETOED and proposal.veto_reason
         else ""
     )
     return (
-        f"**{proposal.title}** · {proposal.template_name}{context}{reason}\n"
+        f"**{proposal.title}**{proposal_type}{context}{reason}\n"
         f"Deadline: <t:{int(proposal.deadline_at.timestamp())}:F>"
     )
 

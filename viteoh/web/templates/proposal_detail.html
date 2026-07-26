@@ -1,7 +1,9 @@
 {% extends "base.html" %}
+{% from "icons.html" import icon %}
 {% block content %}
 <section class="proposal-detail">
-  <span class="eyebrow">{{ proposal.template_name }} proposal</span>
+  {% if proposal.archived %}<span class="archived-label">{{ icon("archive", 15) }}Archived</span>{% endif %}
+  {% if proposal.type_name %}<span class="type-tag">{{ proposal.type_name }}</span>{% endif %}
   <h1>{{ proposal.title }}</h1>
   {% if proposal.context %}<div class="context markdown">{{ proposal.context|safe_markdown }}</div>{% endif %}
   <div class="detail-grid">
@@ -13,14 +15,58 @@
   <section class="reason"><h2>Anonymous veto reason</h2><div class="markdown">{{ proposal.veto_reason|safe_markdown }}</div></section>
   {% endif %}
   <div class="actions">
-    <a class="button primary" href="{{ discord_url }}" rel="noreferrer">Open in Discord</a>
+    <a class="button primary" href="{{ discord_url }}" rel="noreferrer">{{ icon("external", 18) }}Open in Discord</a>
     {% if can_manage and proposal.status.value == "active" %}
-    <form method="post" action="/app/proposals/{{ proposal.id }}/delete" onsubmit="return confirm('Delete this proposal? This cannot be undone.')">
+    <button class="danger" type="button" data-dialog-open="delete-proposal-dialog">{{ icon("trash", 18) }}Delete proposal</button>
+    {% elif can_manage and not proposal.archived %}
+    <button type="button" data-dialog-open="archive-proposal-dialog">{{ icon("archive", 18) }}Archive</button>
+    {% elif can_manage and proposal.archived %}
+    <form class="inline-form" method="post" action="/app/proposals/{{ proposal.id }}/restore">
       <input type="hidden" name="csrf" value="{{ session.csrf }}">
       <input type="hidden" name="guild_id" value="{{ guild_id }}">
-      <button class="danger" type="submit">Delete proposal</button>
+      <button type="submit">{{ icon("archive", 18) }}Restore to history</button>
     </form>
+    <button class="danger" type="button" data-dialog-open="purge-proposal-dialog">{{ icon("trash", 18) }}Delete permanently</button>
     {% endif %}
   </div>
 </section>
+{% if can_manage and proposal.status.value == "active" %}
+<dialog class="confirm-dialog" id="delete-proposal-dialog">
+  <div class="dialog-icon">{{ icon("trash", 22) }}</div>
+  <h2>Delete this proposal?</h2>
+  <p>This resolves the proposal as administratively deleted and cannot be undone.</p>
+  <form class="dialog-actions" method="post" action="/app/proposals/{{ proposal.id }}/delete">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}">
+    <input type="hidden" name="guild_id" value="{{ guild_id }}">
+    <button type="button" data-dialog-close>Cancel</button>
+    <button class="danger" type="submit">Delete proposal</button>
+  </form>
+</dialog>
+{% endif %}
+{% if can_manage and proposal.status.value != "active" and not proposal.archived %}
+<dialog class="confirm-dialog" id="archive-proposal-dialog">
+  <div class="dialog-icon">{{ icon("archive", 22) }}</div>
+  <h2>Archive this proposal?</h2>
+  <p>It will leave the main history and remain available to server managers.</p>
+  <form class="dialog-actions" method="post" action="/app/proposals/{{ proposal.id }}/archive">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}">
+    <input type="hidden" name="guild_id" value="{{ guild_id }}">
+    <button type="button" data-dialog-close>Cancel</button>
+    <button class="primary" type="submit">Archive proposal</button>
+  </form>
+</dialog>
+{% endif %}
+{% if can_manage and proposal.archived %}
+<dialog class="confirm-dialog" id="purge-proposal-dialog">
+  <div class="dialog-icon danger-icon">{{ icon("trash", 22) }}</div>
+  <h2>Delete this proposal permanently?</h2>
+  <p>This removes its workspace record, private activity records, and Discord messages. This cannot be undone.</p>
+  <form class="dialog-actions" method="post" action="/app/proposals/{{ proposal.id }}/purge">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}">
+    <input type="hidden" name="guild_id" value="{{ guild_id }}">
+    <button type="button" data-dialog-close>Cancel</button>
+    <button class="danger" type="submit">Delete permanently</button>
+  </form>
+</dialog>
+{% endif %}
 {% endblock %}

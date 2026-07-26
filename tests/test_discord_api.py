@@ -60,11 +60,31 @@ async def test_discord_announcement_edit_response_and_dm() -> None:
     assert body["components"]
     assert body["embeds"][0]["color"] == 0x5865F2
     assert body["embeds"][0]["title"] == "Alice"
+    assert body["embeds"][0]["author"]["name"] == "Proposal"
+    await client.create_proposal_announcement(
+        replace(
+            proposal(),
+            type_id="builtin:new-member",
+            type_name="New member",
+        )
+    )
+    typed_body = json.loads(requests[-1].content)
+    assert typed_body["embeds"][0]["author"]["name"] == "Type · New member"
 
     await client.edit_interaction_response("interaction-token", "Done")
     terminal = proposal(ProposalStatus.PASSED)
     assert await client.sync_proposal_announcement(terminal) == "message"
     assert await client.create_outcome_reply(terminal) == "message"
+    await client.delete_proposal_history_messages(
+        replace(terminal, outcome_message_id="outcome")
+    )
+    deleted_paths = [
+        request.url.path for request in requests if request.method == "DELETE"
+    ]
+    assert deleted_paths[-2:] == [
+        "/api/v10/channels/channel/messages/outcome",
+        "/api/v10/channels/channel/messages/message",
+    ]
     await client.send_dm("user", "Hello", event_key="event")
     assert any(
         request.url.path.endswith("/channels/dm/messages") for request in requests
@@ -275,6 +295,7 @@ async def test_workspace_access_resolves_member_and_bot_channel_permissions() ->
                 json={
                     "id": "guild",
                     "name": "Test Guild",
+                    "icon": "a_deadbeef",
                     "owner_id": "someone-else",
                 },
             )
@@ -286,6 +307,7 @@ async def test_workspace_access_resolves_member_and_bot_channel_permissions() ->
     )
     access = await client.get_workspace_access("guild", "user")
     assert access["display_name"] == "Ada"
+    assert access["guild_icon_hash"] == "a_deadbeef"
     assert access["can_manage"]
     assert access["visible_channel_ids"] == ["ready", "voice"]
     assert access["output_channels"] == [

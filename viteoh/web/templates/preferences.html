@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="page-heading"><div><span class="eyebrow">{{ guild_name }}</span><h1>Your preferences</h1><p>These settings apply only in this server.</p></div></section>
-<form class="panel form-stack narrow" method="post" action="/app/preferences">
+<form class="panel form-stack narrow settings-form" method="post" action="/app/preferences">
   <input type="hidden" name="csrf" value="{{ session.csrf }}">
   <input type="hidden" name="guild_id" value="{{ guild_id }}">
   <label class="toggle"><input type="checkbox" name="new_proposals" {% if subscribed %}checked{% endif %}><span><strong>New proposal DMs</strong><small>Receive a private message whenever a proposal is created.</small></span></label>
   <label class="toggle"><input type="checkbox" name="nudges" {% if nudges %}checked{% endif %}><span><strong>Anonymous nudges</strong><small>Allow members to privately draw your attention to a proposal.</small></span></label>
-  <button class="primary" type="submit">Save preferences</button>
+  <div><button class="primary" type="submit">Save preferences</button></div>
 </form>
 {% endblock %}

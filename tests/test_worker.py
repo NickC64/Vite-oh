@@ -191,6 +191,20 @@ async def test_reconciliation_repairs_missing_task(
     assert result["repaired"] == 1
 
 
+async def test_workspace_guild_summaries_filter_and_describe_live_memberships(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+) -> None:
+    processor, _, _, _ = system
+    result = await processor.workspace_guild_summaries(
+        ["guild", "missing", "guild", "guild-2"], "owner"
+    )
+
+    assert [item["guild_id"] for item in result["guilds"]] == ["guild-2", "guild"]
+    assert result["guilds"][0]["configured"] is False
+    assert result["guilds"][1]["configured"] is True
+    assert all(item["can_manage"] for item in result["guilds"])
+
+
 async def test_reconciliation_upgrades_legacy_active_announcement_once(
     system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
 ) -> None:
@@ -566,7 +580,7 @@ async def test_custom_type_modal_creation_and_snapshot(
     processor, repository, _, discord = system
     await processor.process(
         {
-            "id": "template-create",
+            "id": "type-create",
             "type": 5,
             "token": "token",
             "guild_id": "guild",
@@ -575,7 +589,7 @@ async def test_custom_type_modal_creation_and_snapshot(
                 "permissions": str(MANAGE_GUILD),
             },
             "data": {
-                "custom_id": "template-create|new",
+                "custom_id": "type-create|new",
                 "components": [
                     {"components": [{"custom_id": "name", "value": "Policy"}]},
                     {
@@ -587,13 +601,8 @@ async def test_custom_type_modal_creation_and_snapshot(
             },
         }
     )
-    template = next(iter(repository.templates.values()))
-    assert not template.context_required
+    proposal_type = next(iter(repository.types.values()))
     assert "created" in discord.responses[-1]
-    # Old custom types may still carry a former title format. It is ignored.
-    repository.templates[("guild", template.id)] = replace(
-        template, title_format="Adopt {subject} as policy"
-    )
 
     await processor.process(
         command(
@@ -601,28 +610,24 @@ async def test_custom_type_modal_creation_and_snapshot(
             interaction_id="proposal-create",
             options=[
                 {"name": "title", "value": "quiet hours"},
-                {"name": "type", "value": template.id},
+                {"name": "type", "value": proposal_type.id},
                 {"name": "context", "value": "Reduce late pings"},
             ],
         )
     )
     proposal = next(iter(repository.proposals.values()))
     assert proposal.title == "quiet hours"
-    assert proposal.template_name == "Policy"
-    await repository.save_template(
+    assert proposal.type_name == "Policy"
+    await repository.save_type(
         "guild",
-        template.id,
+        proposal_type.id,
         "Rules",
         "rules",
-        template.description,
-        template.subject_label,
-        template.context_label,
-        template.title_format,
-        False,
+        proposal_type.description,
         "admin",
         utcnow(),
     )
-    assert repository.proposals[proposal.id].template_name == "Policy"
+    assert repository.proposals[proposal.id].type_name == "Policy"
 
 
 async def test_veto_modal_reason_is_anonymous_public_and_outcome_is_idempotent(
@@ -662,29 +667,25 @@ async def test_veto_modal_reason_is_anonymous_public_and_outcome_is_idempotent(
     assert len(discord.outcomes) == 1
 
 
-async def test_custom_template_delete_confirmation_revalidates_admin(
+async def test_custom_type_delete_confirmation_revalidates_admin(
     system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
 ) -> None:
     processor, repository, _, discord = system
-    template = (
-        await repository.save_template(
+    proposal_type = (
+        await repository.save_type(
             "guild",
             None,
             "Policy",
             "policy",
             "Change policy",
-            "Subject",
-            "Context",
-            "{subject}",
-            False,
             "admin",
             utcnow(),
         )
-    ).template
-    assert template
-    control = component_id("template", "confirm-delete", template.id)
+    ).proposal_type
+    assert proposal_type
+    control = component_id("type", "confirm-delete", proposal_type.id)
     payload = {
-        "id": "delete-template",
+        "id": "delete-type",
         "type": 3,
         "token": "token",
         "guild_id": "guild",
@@ -698,7 +699,7 @@ async def test_custom_template_delete_confirmation_revalidates_admin(
         "permissions": str(MANAGE_GUILD),
     }
     await processor.process(payload)
-    assert await repository.get_template("guild", template.id) is None
+    assert await repository.get_type("guild", proposal_type.id) is None
 
 
 async def test_workspace_launcher_is_private_one_time_and_contextual(
@@ -742,7 +743,7 @@ async def test_workspace_jobs_reuse_durable_proposal_and_preference_logic(
         "data": {
             "title": "Quiet hours",
             "context": "No late pings",
-            "type_id": "builtin:general",
+            "type_id": "",
         },
     }
     await processor.process_workspace(create)
@@ -750,6 +751,7 @@ async def test_workspace_jobs_reuse_durable_proposal_and_preference_logic(
     assert job.status == "succeeded"
     assert job.proposal_id
     assert repository.proposals[job.proposal_id].title == "Quiet hours"
+    assert repository.proposals[job.proposal_id].type_name == ""
     assert tasks.deadlines
     assert discord.announcements
 
@@ -791,7 +793,7 @@ async def test_workspace_admin_jobs_validate_permission_and_types(
     }
     await processor.process_workspace(save_type)
     assert repository.workspace_jobs["type"].status == "succeeded"
-    custom = next(iter(repository.templates.values()))
+    custom = next(iter(repository.types.values()))
 
     await processor.process_workspace(
         {
@@ -803,4 +805,119 @@ async def test_workspace_admin_jobs_validate_permission_and_types(
         }
     )
     assert repository.workspace_jobs["delete-type"].status == "succeeded"
-    assert not repository.templates
+    assert not repository.types
+
+
+async def test_workspace_admin_can_archive_then_purge_history(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+) -> None:
+    processor, repository, _, discord = system
+    await processor.process(command("new", value="Retire an old rule"))
+    proposal = next(iter(repository.proposals.values()))
+    repository.proposals[proposal.id] = replace(
+        proposal,
+        status=ProposalStatus.PASSED,
+        terminal_at=utcnow(),
+        effects_complete=True,
+        outcome_message_id="outcome",
+    )
+
+    await processor.process_workspace(
+        {
+            "id": "archive-history",
+            "action": "archive",
+            "actor_user_id": "admin",
+            "guild_id": "guild",
+            "data": {"proposal_id": proposal.id},
+        }
+    )
+    archived = repository.proposals[proposal.id]
+    assert archived.archived
+    assert archived.archived_by == "admin"
+    assert repository.workspace_jobs["archive-history"].status == "succeeded"
+    assert not await repository.list_guild_proposals("guild")
+    assert await repository.list_guild_proposals("guild", archived=True) == [archived]
+
+    await processor.process_workspace(
+        {
+            "id": "restore-history",
+            "action": "restore",
+            "actor_user_id": "admin",
+            "guild_id": "guild",
+            "data": {"proposal_id": proposal.id},
+        }
+    )
+    assert repository.workspace_jobs["restore-history"].status == "succeeded"
+    assert not repository.proposals[proposal.id].archived
+    await repository.archive_proposal(proposal.id, "guild", "admin", utcnow())
+    archived = repository.proposals[proposal.id]
+
+    repository.acknowledgements[proposal.id] = {"member"}
+    repository.nudges[proposal.id] = {"member": "delivered"}
+    repository.subscribers[proposal.id] = {"member"}
+    repository.delivered.add((proposal.id, "passed", "member"))
+    await processor.process_workspace(
+        {
+            "id": "purge-history",
+            "action": "purge",
+            "actor_user_id": "admin",
+            "guild_id": "guild",
+            "data": {"proposal_id": proposal.id},
+        }
+    )
+    assert repository.workspace_jobs["purge-history"].status == "succeeded"
+    assert proposal.id not in repository.proposals
+    assert proposal.id not in repository.acknowledgements
+    assert proposal.id not in repository.nudges
+    assert proposal.id not in repository.subscribers
+    assert not repository.delivered
+    assert discord.deleted_history == [archived]
+
+    await repository.set_workspace_job(
+        "purge-retry",
+        "guild",
+        processor.workspace_codec.fingerprint("admin"),
+        "purge",
+        "processing",
+        "",
+        None,
+        utcnow(),
+        3600,
+    )
+    await processor.process_workspace(
+        {
+            "id": "purge-retry",
+            "action": "purge",
+            "actor_user_id": "admin",
+            "guild_id": "guild",
+            "data": {"proposal_id": proposal.id},
+        }
+    )
+    assert repository.workspace_jobs["purge-retry"].status == "succeeded"
+
+
+async def test_active_or_unarchived_proposals_cannot_be_purged(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+) -> None:
+    processor, repository, _, _ = system
+    await processor.process(command("new", value="Still underway"))
+    proposal = next(iter(repository.proposals.values()))
+    active_archive = await repository.archive_proposal(
+        proposal.id, "guild", "admin", utcnow()
+    )
+    assert active_archive.reason == "active"
+
+    repository.proposals[proposal.id] = replace(
+        proposal, status=ProposalStatus.PASSED, terminal_at=utcnow()
+    )
+    await processor.process_workspace(
+        {
+            "id": "premature-purge",
+            "action": "purge",
+            "actor_user_id": "admin",
+            "guild_id": "guild",
+            "data": {"proposal_id": proposal.id},
+        }
+    )
+    assert repository.workspace_jobs["premature-purge"].status == "failed"
+    assert "Archive" in repository.workspace_jobs["premature-purge"].message

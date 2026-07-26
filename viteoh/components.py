@@ -2,7 +2,7 @@ import re
 from typing import Any
 
 _COMPONENT_RE = re.compile(
-    r"^(?P<scope>proposal|template):"
+    r"^(?P<scope>proposal|type):"
     r"(?P<action>veto|confirm-veto|subscribe|acknowledge|nudge|nudge-select|"
     r"workspace|confirm-delete|cancel-delete):"
     r"(?P<resource_id>[0-9a-f-]{36})$"

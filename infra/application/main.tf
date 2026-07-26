@@ -448,6 +448,10 @@ resource "google_firestore_index" "proposal_history" {
     order      = "ASCENDING"
   }
   fields {
+    field_path = "archived"
+    order      = "ASCENDING"
+  }
+  fields {
     field_path = "created_at"
     order      = "DESCENDING"
   }

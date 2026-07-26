@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "icons.html" import icon %}
 {% block content %}
 <section class="page-heading">
   <div>
@@ -11,18 +12,6 @@
   <form class="panel form-stack" method="post" action="/app/proposals" data-proposal-form>
     <input type="hidden" name="csrf" value="{{ session.csrf }}">
     <input type="hidden" name="guild_id" value="{{ guild_id }}">
-    <fieldset>
-      <legend>What kind of proposal is this?</legend>
-      <div class="type-grid">
-        {% for item in proposal_types %}
-        <label class="type-choice">
-          <input type="radio" name="proposal_type" value="{{ item.id }}" {% if loop.first %}checked{% endif %}>
-          <strong>{{ item.name }}</strong>
-          <span>{{ item.description }}</span>
-        </label>
-        {% endfor %}
-      </div>
-    </fieldset>
     <label>Title
       <input name="title" required minlength="1" maxlength="100" autocomplete="off" data-title>
       <small><span data-title-count>0</span>/100 characters</small>
@@ -31,12 +20,21 @@
       <textarea name="context" maxlength="1000" rows="8" data-context></textarea>
       <small>Give members enough information to decide whether they object.</small>
     </label>
-    <button class="primary" type="submit">Create proposal in Discord</button>
+    <label>Type <span class="optional">optional</span>
+      <select name="proposal_type" data-proposal-type>
+        <option value="">No type</option>
+        {% for item in proposal_types %}
+        <option value="{{ item.id }}" data-description="{{ item.description }}">{{ item.name }}</option>
+        {% endfor %}
+      </select>
+      <small>Types are category tags for browsing; they do not change the proposal.</small>
+    </label>
+    <button class="primary" type="submit">{{ icon("plus", 18) }}Create proposal in Discord</button>
   </form>
   <aside class="preview-wrap">
     <span class="eyebrow">Discord preview</span>
     <article class="discord-preview">
-      <span class="preview-type" data-preview-type>General proposal</span>
+      <span class="preview-type" data-preview-type hidden></span>
       <h2 data-preview-title>Your proposal title</h2>
       <p data-preview-context>Optional context will appear here.</p>
       <dl>

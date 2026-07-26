@@ -186,6 +186,29 @@ class DiscordClient:
             if exc.status_code != 404:
                 raise
 
+    async def delete_proposal_history_messages(self, proposal: Proposal) -> None:
+        for message_id in (proposal.outcome_message_id, proposal.message_id):
+            if not message_id:
+                continue
+            try:
+                await self._request(
+                    "DELETE",
+                    f"/channels/{proposal.output_channel_id}/messages/{message_id}",
+                )
+            except DiscordAPIError as exc:
+                if exc.status_code == 404:
+                    continue
+                if exc.retryable:
+                    raise
+                logger.warning(
+                    "Discord did not permit proposal history message deletion",
+                    extra={
+                        "proposal_id": proposal.id,
+                        "message_id": message_id,
+                        "status_code": exc.status_code,
+                    },
+                )
+
     async def validate_output_channel(self, guild_id: str, channel_id: str) -> str:
         channel = await self._request("GET", f"/channels/{channel_id}")
         if not channel or str(channel.get("guild_id", "")) != guild_id:
@@ -289,6 +312,7 @@ class DiscordClient:
         return {
             "guild_id": guild_id,
             "guild_name": str(guild.get("name") or guild_id),
+            "guild_icon_hash": _guild_icon_hash(guild.get("icon")),
             "display_name": str(
                 member.get("nick")
                 or (
@@ -331,6 +355,18 @@ class DiscordClient:
 
 def _nonce(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()[:25]
+
+
+def _guild_icon_hash(value: object) -> str:
+    candidate = str(value or "")
+    digest = candidate[2:] if candidate.startswith("a_") else candidate
+    if (
+        digest
+        and len(digest) <= 64
+        and all(character in "0123456789abcdef" for character in digest.casefold())
+    ):
+        return candidate
+    return ""
 
 
 _COLORS = {
@@ -376,7 +412,11 @@ def _proposal_embed(proposal: Proposal) -> dict[str, Any]:
             }
         )
     return {
-        "author": {"name": f"{proposal.template_name} proposal"[:256]},
+        "author": {
+            "name": (
+                f"Type · {proposal.type_name}" if proposal.type_name else "Proposal"
+            )[:256]
+        },
         "title": proposal.title,
         **({"description": proposal.context} if proposal.context else {}),
         "color": _COLORS[proposal.status],

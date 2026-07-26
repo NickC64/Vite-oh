@@ -4,18 +4,22 @@
 <form class="panel form-stack narrow" method="post" action="/app/settings">
   <input type="hidden" name="csrf" value="{{ session.csrf }}">
   <input type="hidden" name="guild_id" value="{{ guild_id }}">
-  <label>Proposal channel
-    <select name="channel_id" required>
-      {% for channel in output_channels %}
-      <option value="{{ channel.id }}" {% if config and config.output_channel_id == channel.id %}selected{% endif %} {% if not channel.bot_ready %}disabled{% endif %}>#{{ channel.name }}{% if not channel.bot_ready %} — bot permissions missing{% endif %}</option>
-      {% endfor %}
-    </select>
-    <small>The bot needs View Channel, Send Messages, Embed Links, and Read Message History.</small>
-  </label>
-  <label>Duration in minutes
-    <input type="number" name="duration_minutes" min="1" max="10080" required value="{{ config.proposal_timeout_seconds // 60 if config else 2880 }}">
-    <small>Between one minute and seven days.</small>
-  </label>
-  <button class="primary" type="submit">Save server settings</button>
+  <section class="settings-section">
+    <label>Proposal channel
+      <select name="channel_id" required>
+        {% for channel in output_channels %}
+        <option value="{{ channel.id }}" {% if config and config.output_channel_id == channel.id %}selected{% endif %} {% if not channel.bot_ready %}disabled{% endif %}>#{{ channel.name }}{% if not channel.bot_ready %} — bot permissions missing{% endif %}</option>
+        {% endfor %}
+      </select>
+      <small>The bot needs View Channel, Send Messages, Embed Links, and Read Message History.</small>
+    </label>
+  </section>
+  <section class="settings-section">
+    <label>Duration in minutes
+      <input type="number" name="duration_minutes" min="1" max="10080" required value="{{ config.proposal_timeout_seconds // 60 if config else 2880 }}">
+      <small>Between one minute and seven days. Existing proposal deadlines do not change.</small>
+    </label>
+  </section>
+  <div><button class="primary" type="submit">Save server settings</button></div>
 </form>
 {% endblock %}

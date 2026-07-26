@@ -20,7 +20,7 @@ class GuildConfig:
     configured_by: str
     created_at: datetime
     updated_at: datetime
-    custom_template_count: int = 0
+    custom_type_count: int = 0
 
     @classmethod
     def from_document(cls, document_id: str, data: dict[str, Any]) -> "GuildConfig":
@@ -32,21 +32,17 @@ class GuildConfig:
             configured_by=data["configured_by"],
             created_at=_utc(data["created_at"]),
             updated_at=_utc(data["updated_at"]),
-            custom_template_count=int(data.get("custom_template_count", 0)),
+            custom_type_count=int(data.get("custom_type_count", 0)),
         )
 
 
 @dataclass(frozen=True, slots=True)
-class ProposalTemplate:
+class ProposalType:
     id: str
     guild_id: str
     name: str
     normalized_name: str
     description: str
-    subject_label: str
-    context_label: str
-    title_format: str
-    context_required: bool
     created_by: str
     updated_by: str
     created_at: datetime
@@ -56,17 +52,13 @@ class ProposalTemplate:
     @classmethod
     def from_document(
         cls, guild_id: str, document_id: str, data: dict[str, Any]
-    ) -> "ProposalTemplate":
+    ) -> "ProposalType":
         return cls(
             id=document_id,
             guild_id=guild_id,
             name=data["name"],
             normalized_name=data["normalized_name"],
             description=data["description"],
-            subject_label=data["subject_label"],
-            context_label=data["context_label"],
-            title_format=data["title_format"],
-            context_required=bool(data.get("context_required", False)),
             created_by=data["created_by"],
             updated_by=data["updated_by"],
             created_at=_utc(data["created_at"]),
@@ -97,10 +89,13 @@ class Proposal:
     nudge_count: int = 0
     announcement_version: int = 0
     render_version: int = 0
-    template_id: str = "builtin:general"
-    template_name: str = "General"
+    type_id: str = ""
+    type_name: str = ""
     veto_reason: str = ""
     outcome_message_id: str | None = None
+    archived: bool = False
+    archived_at: datetime | None = None
+    archived_by: str = ""
 
     @classmethod
     def from_document(cls, document_id: str, data: dict[str, Any]) -> "Proposal":
@@ -109,10 +104,8 @@ class Proposal:
             guild_id=data["guild_id"],
             guild_name=data["guild_name"],
             output_channel_id=data["output_channel_id"],
-            title=data.get("title", data.get("display_name", "")),
-            normalized_title=data.get(
-                "normalized_title", data.get("normalized_name", "")
-            ),
+            title=data["title"],
+            normalized_title=data["normalized_title"],
             context=data.get("context", ""),
             reservation_id=data["reservation_id"],
             status=ProposalStatus(data["status"]),
@@ -128,10 +121,15 @@ class Proposal:
             nudge_count=int(data.get("nudge_count", 0)),
             announcement_version=int(data.get("announcement_version", 0)),
             render_version=int(data.get("render_version", 0)),
-            template_id=data.get("template_id", "builtin:general"),
-            template_name=data.get("template_name", "General"),
+            type_id=data.get("type_id", ""),
+            type_name=data.get("type_name", ""),
             veto_reason=data.get("veto_reason", ""),
             outcome_message_id=data.get("outcome_message_id"),
+            archived=bool(data.get("archived", False)),
+            archived_at=(
+                _utc(data["archived_at"]) if data.get("archived_at") else None
+            ),
+            archived_by=str(data.get("archived_by", "")),
         )
 
 
@@ -156,8 +154,8 @@ class ProposalActionResult:
 
 
 @dataclass(frozen=True, slots=True)
-class TemplateMutationResult:
-    template: ProposalTemplate | None
+class TypeMutationResult:
+    proposal_type: ProposalType | None
     changed: bool
     reason: str
 

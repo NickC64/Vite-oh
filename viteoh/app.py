@@ -181,6 +181,21 @@ def create_app(
                     status_code=403,
                 )
             return JSONResponse(result)
+
+        @application.post("/internal/workspace/guilds")
+        async def workspace_guilds(request: Request) -> JSONResponse:
+            active_processor = processor or resources["processor"]
+            body = await request.json()
+            guild_ids = body.get("guild_ids")
+            if not isinstance(guild_ids, list):
+                return JSONResponse(
+                    {"detail": "Server identifiers are required."}, status_code=422
+                )
+            result = await active_processor.workspace_guild_summaries(
+                [str(item) for item in guild_ids],
+                str(body.get("user_id", "")),
+            )
+            return JSONResponse(result)
     else:
         assert workspace is not None
         application.include_router(workspace.router)
@@ -197,7 +212,8 @@ def create_app(
         ) -> Response:
             response = cast(Response, await call_next(request))
             response.headers["Content-Security-Policy"] = (
-                "default-src 'self'; img-src 'self' data:; "
+                "default-src 'self'; "
+                "img-src 'self' data: https://cdn.discordapp.com; "
                 "style-src 'self'; script-src 'self'; "
                 "connect-src 'self'; frame-ancestors 'none'; form-action 'self'"
             )

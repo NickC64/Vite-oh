@@ -1,45 +1,136 @@
+{% from "icons.html" import icon %}
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#1e1f22" data-theme-color>
   <title>{{ title }} · Vite-oh</title>
+  <script src="/static/theme.js"></script>
   <link rel="stylesheet" href="/static/workspace.css">
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/workspace.js" type="module"></script>
 </head>
-<body>
+<body class="{% if session %}workspace-authenticated{% endif %}">
   {% if session %}
-  <header class="topbar">
-    <a class="brand" href="/app?guild={{ guild_id }}">Vite-oh</a>
-    <nav aria-label="Workspace">
-      <a href="/app?guild={{ guild_id }}">Proposals</a>
-      <a href="/app/proposals/new?guild={{ guild_id }}">Create</a>
-      <a href="/app/preferences?guild={{ guild_id }}">Preferences</a>
-      {% if can_manage %}
-      <a href="/app/settings?guild={{ guild_id }}">Settings</a>
-      <a href="/app/types?guild={{ guild_id }}">Types</a>
-      {% endif %}
-    </nav>
-    <form method="post" action="/logout">
-      <input type="hidden" name="csrf" value="{{ session.csrf }}">
-      <button class="quiet" type="submit">Sign out</button>
-    </form>
+  <header class="mobile-header">
+    <button class="icon-button" type="button" data-drawer-open aria-controls="workspace-navigation" aria-expanded="false">
+      {{ icon("menu", 22) }}<span class="sr-only">Open navigation</span>
+    </button>
+    <a class="mobile-server" href="/app?guild={{ guild_id }}">
+      <span class="guild-avatar guild-avatar-small fallback-tone-{{ current_guild.fallback_tone }}">
+        <span>{{ current_guild.initials }}</span>
+        {% if current_guild.guild_icon_url %}<img src="{{ current_guild.guild_icon_url }}" alt="" data-guild-icon>{% endif %}
+      </span>
+      <strong>{{ current_guild.guild_name }}</strong>
+    </a>
+    <button class="icon-button theme-toggle" type="button" data-theme-toggle>
+      <span class="theme-icon theme-icon-sun">{{ icon("sun", 20) }}</span>
+      <span class="theme-icon theme-icon-moon">{{ icon("moon", 20) }}</span>
+      <span class="sr-only" data-theme-label>Switch theme</span>
+    </button>
   </header>
-  {% endif %}
-  <main class="shell">
-    {% if session and guilds %}
-    <form class="guild-switcher" method="get" action="/app">
-      <label for="guild">Server</label>
-      <select id="guild" name="guild" onchange="this.form.submit()">
+
+  <div class="workspace-frame">
+    <nav class="server-rail" aria-label="Servers">
+      <a class="viteoh-mark" href="/app?guild={{ guild_id }}" aria-label="Vite-oh proposals" title="Vite-oh">
+        <span>V</span>
+      </a>
+      <div class="rail-divider"></div>
+      <div class="server-list">
         {% for item in guilds %}
-        <option value="{{ item.guild_id }}" {% if item.guild_id == guild_id %}selected{% endif %}>{{ item.guild_name }}</option>
+        <a class="server-button{% if item.guild_id == guild_id %} selected{% endif %}" href="/app?guild={{ item.guild_id }}" aria-label="{{ item.guild_name }}" title="{{ item.guild_name }}" {% if item.guild_id == guild_id %}aria-current="page"{% endif %}>
+          <span class="selection-pill"></span>
+          <span class="guild-avatar fallback-tone-{{ item.fallback_tone }}">
+            <span>{{ item.initials }}</span>
+            {% if item.guild_icon_url %}<img src="{{ item.guild_icon_url }}" alt="" data-guild-icon>{% endif %}
+          </span>
+        </a>
         {% endfor %}
-      </select>
-    </form>
-    {% endif %}
-    {% block content %}{% endblock %}
+      </div>
+      <button class="server-button add-server" type="button" data-dialog-open="add-server-dialog" aria-label="Add another server" title="Add another server">
+        <span class="guild-avatar">{{ icon("plus", 22) }}</span>
+      </button>
+    </nav>
+
+    <aside class="workspace-sidebar" id="workspace-navigation" aria-label="Workspace navigation">
+      <div class="sidebar-server-header">
+        <span class="guild-avatar guild-avatar-small fallback-tone-{{ current_guild.fallback_tone }}">
+          <span>{{ current_guild.initials }}</span>
+          {% if current_guild.guild_icon_url %}<img src="{{ current_guild.guild_icon_url }}" alt="" data-guild-icon>{% endif %}
+        </span>
+        <div><strong>{{ current_guild.guild_name }}</strong><small>Proposal workspace</small></div>
+        <button class="icon-button drawer-close" type="button" data-drawer-close>
+          {{ icon("x", 20) }}<span class="sr-only">Close navigation</span>
+        </button>
+      </div>
+
+      <nav class="workspace-nav">
+        <span class="nav-section-label">Proposals</span>
+        <a href="/app?guild={{ guild_id }}" class="{% if active_page == 'overview' %}active{% endif %}" {% if active_page == "overview" %}aria-current="page"{% endif %}>
+          {{ icon("home") }}<span>Overview</span>
+        </a>
+        <a href="/app/proposals/new?guild={{ guild_id }}" class="{% if active_page == 'create' %}active{% endif %}" {% if active_page == "create" %}aria-current="page"{% endif %}>
+          {{ icon("plus") }}<span>Create proposal</span>
+        </a>
+        <span class="nav-section-label">Personal</span>
+        <a href="/app/preferences?guild={{ guild_id }}" class="{% if active_page == 'preferences' %}active{% endif %}" {% if active_page == "preferences" %}aria-current="page"{% endif %}>
+          {{ icon("bell") }}<span>Preferences</span>
+        </a>
+        {% if can_manage %}
+        <span class="nav-section-label">Administration</span>
+        <a href="/app/settings?guild={{ guild_id }}" class="{% if active_page == 'settings' %}active{% endif %}" {% if active_page == "settings" %}aria-current="page"{% endif %}>
+          {{ icon("settings") }}<span>Server settings</span>
+        </a>
+        <a href="/app/types?guild={{ guild_id }}" class="{% if active_page == 'types' %}active{% endif %}" {% if active_page == "types" %}aria-current="page"{% endif %}>
+          {{ icon("tags") }}<span>Proposal types</span>
+        </a>
+        <a href="/app/archive?guild={{ guild_id }}" class="{% if active_page == 'archive' %}active{% endif %}" {% if active_page == "archive" %}aria-current="page"{% endif %}>
+          {{ icon("archive") }}<span>History archive</span>
+        </a>
+        {% endif %}
+      </nav>
+
+      <div class="user-panel">
+        <span class="user-avatar">{{ session.display_name[:1]|upper }}</span>
+        <div class="user-name"><strong>{{ session.display_name }}</strong><small>Signed in through Discord</small></div>
+        <button class="icon-button theme-toggle" type="button" data-theme-toggle title="Toggle light or dark theme">
+          <span class="theme-icon theme-icon-sun">{{ icon("sun", 18) }}</span>
+          <span class="theme-icon theme-icon-moon">{{ icon("moon", 18) }}</span>
+          <span class="sr-only" data-theme-label>Switch theme</span>
+        </button>
+        <form method="post" action="/logout">
+          <input type="hidden" name="csrf" value="{{ session.csrf }}">
+          <button class="icon-button" type="submit" title="Sign out">
+            {{ icon("logout", 18) }}<span class="sr-only">Sign out</span>
+          </button>
+        </form>
+      </div>
+    </aside>
+
+    <button class="drawer-backdrop" type="button" data-drawer-close aria-label="Close navigation"></button>
+    <main class="content-pane">
+      <div class="shell">
+  {% else %}
+  <main class="public-shell">
+  {% endif %}
+        {% block content %}{% endblock %}
+  {% if session %}
+      </div>
+    </main>
+  </div>
+
+  <dialog class="confirm-dialog" id="add-server-dialog">
+    <div class="dialog-icon">{{ icon("server", 24) }}</div>
+    <h2>Add another server</h2>
+    <p>In Discord, run <code>/proposal</code> in the server you want to add, then open its private workspace link in this browser.</p>
+    <div class="dialog-actions">
+      <button class="primary" type="button" data-dialog-close>Got it</button>
+    </div>
+  </dialog>
+  {% else %}
   </main>
+  {% endif %}
 </body>
 </html>

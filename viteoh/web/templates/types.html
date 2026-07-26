@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "icons.html" import icon %}
 {% block content %}
 <section class="page-heading"><div><span class="eyebrow">{{ guild_name }}</span><h1>Proposal types</h1><p>Types label proposals without changing their titles.</p></div></section>
 <section class="type-admin-grid">
@@ -15,11 +16,18 @@
       <label>Description<input name="description" maxlength="100" required value="{{ item.description }}"></label>
       <button type="submit">Save</button>
     </form>
-    <form method="post" action="/app/types/{{ item.id }}/delete" onsubmit="return confirm('Delete this proposal type?')">
-      <input type="hidden" name="csrf" value="{{ session.csrf }}">
-      <input type="hidden" name="guild_id" value="{{ guild_id }}">
-      <button class="danger quiet" type="submit">Delete</button>
-    </form>
+    <button class="danger quiet" type="button" data-dialog-open="delete-type-{{ item.id }}">{{ icon("trash", 17) }}Delete</button>
+    <dialog class="confirm-dialog" id="delete-type-{{ item.id }}">
+      <div class="dialog-icon">{{ icon("trash", 22) }}</div>
+      <h2>Delete {{ item.name }}?</h2>
+      <p>Existing proposals keep this type label, but it cannot be chosen again.</p>
+      <form class="dialog-actions" method="post" action="/app/types/{{ item.id }}/delete">
+        <input type="hidden" name="csrf" value="{{ session.csrf }}">
+        <input type="hidden" name="guild_id" value="{{ guild_id }}">
+        <button type="button" data-dialog-close>Cancel</button>
+        <button class="danger" type="submit">Delete type</button>
+      </form>
+    </dialog>
     {% endif %}
   </article>
   {% endfor %}

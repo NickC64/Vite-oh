@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% from "icons.html" import icon %}
+{% block content %}
+<section class="page-heading">
+  <div>
+    <span class="eyebrow">{{ guild_name }}</span>
+    <h1>History archive</h1>
+    <p>Resolved proposals moved out of the main history. Open one to delete it permanently.</p>
+  </div>
+</section>
+<div class="history-list">
+  {% for proposal in proposals %}
+  <a href="/app/proposals/{{ proposal.id }}?guild={{ guild_id }}">
+    <span class="status {{ proposal.status.value }}">{{ proposal.status.value }}</span>
+    <strong>{{ proposal.title }}</strong>
+    <span class="history-type">{% if proposal.type_name %}{{ proposal.type_name }}{% else %}No type{% endif %}</span>
+    <time>{{ proposal.archived_at.strftime("%Y-%m-%d") if proposal.archived_at else proposal.created_at.strftime("%Y-%m-%d") }}</time>
+    {{ icon("chevron", 16) }}
+  </a>
+  {% else %}
+  <div class="panel empty">
+    <h2>The archive is empty</h2>
+    <p>Archived history will appear here.</p>
+  </div>
+  {% endfor %}
+</div>
+{% if next_before %}
+<div class="pagination">
+  <a class="button" href="/app/archive?guild={{ guild_id }}&before={{ next_before }}">Older proposals</a>
+</div>
+{% endif %}
+{% endblock %}

@@ -150,20 +150,16 @@ async def test_type_autocomplete_and_admin_delete_confirmation() -> None:
     await repository.set_guild_config(
         "guild", "Test Guild", "channel", 60, "admin", now
     )
-    saved = await repository.save_template(
+    saved = await repository.save_type(
         "guild",
         None,
         "Policy",
         "policy",
         "Change a server policy",
-        "Policy subject",
-        "Supporting context",
-        "Adopt {subject} as policy",
-        True,
         "admin",
         now,
     )
-    assert saved.template
+    assert saved.proposal_type
     service = InteractionReceiver(
         Settings(discord_public_key=key.verify_key.encode().hex()),
         SignatureVerifier(key.verify_key.encode().hex()),
@@ -202,7 +198,7 @@ async def test_type_autocomplete_and_admin_delete_confirmation() -> None:
             },
         },
     )
-    assert choices["data"]["choices"][0]["value"] == saved.template.id
+    assert choices["data"]["choices"][0]["value"] == saved.proposal_type.id
 
     _, confirmation = await signed_receive(
         service,
@@ -226,7 +222,7 @@ async def test_type_autocomplete_and_admin_delete_confirmation() -> None:
                                 "name": "delete",
                                 "type": 1,
                                 "options": [
-                                    {"name": "type", "value": saved.template.id}
+                                    {"name": "type", "value": saved.proposal_type.id}
                                 ],
                             }
                         ],
@@ -271,8 +267,8 @@ async def test_autocomplete_returns_filtered_uuid_choices() -> None:
         "Alpha proposal",
         "alpha proposal",
         "",
-        "builtin:general",
-        "General",
+        "",
+        "",
         now,
         now + timedelta(minutes=5),
     )
@@ -310,7 +306,7 @@ async def test_autocomplete_returns_filtered_uuid_choices() -> None:
     )
     assert response["type"] == 8
     assert response["data"]["choices"] == [
-        {"name": "Alpha proposal · General", "value": repository.next_id}
+        {"name": "Alpha proposal", "value": repository.next_id}
     ]
     assert not tasks.interactions
 

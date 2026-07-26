@@ -8,15 +8,15 @@ from fastapi.testclient import TestClient
 from tests.fakes import FakeRepository, FakeTasks
 from viteoh.app import create_app
 from viteoh.config import Settings
-from viteoh.domain import GuildConfig, utcnow
-from viteoh.workspace import Workspace
+from viteoh.domain import GuildConfig, ProposalStatus, utcnow
+from viteoh.workspace import Workspace, _guild_view
 from viteoh.workspace_client import WorkspaceWorkerError
 from viteoh.workspace_security import SignedTokenCodec
 
 
 class FakeWorkspaceWorker:
     def __init__(self) -> None:
-        self.used = False
+        self.used: set[str] = set()
         self.admin = True
         self.member = True
 
@@ -24,12 +24,13 @@ class FakeWorkspaceWorker:
         pass
 
     async def exchange_launch(self, code: str) -> dict[str, Any]:
-        if code != "good" or self.used:
+        guild_id = {"good": "guild", "second": "guild-2"}.get(code)
+        if not guild_id or code in self.used:
             raise WorkspaceWorkerError("This workspace link is invalid or used.")
-        self.used = True
+        self.used.add(code)
         return {
             "user_id": "admin",
-            "guild_id": "guild",
+            "guild_id": guild_id,
             "proposal_id": None,
             "display_name": "Ada",
         }
@@ -37,16 +38,33 @@ class FakeWorkspaceWorker:
     async def get_access(self, guild_id: str, user_id: str) -> dict[str, Any]:
         if not self.member:
             raise WorkspaceWorkerError("You are no longer a member.")
+        channel_id = "channel" if guild_id == "guild" else "channel-2"
         return {
             "guild_id": guild_id,
-            "guild_name": "Test Guild",
+            "guild_name": "Test Guild" if guild_id == "guild" else "Second Guild",
             "is_member": True,
             "can_manage": self.admin,
-            "visible_channel_ids": ["channel"],
+            "visible_channel_ids": [channel_id],
             "output_channels": [
-                {"id": "channel", "name": "proposals", "bot_ready": True}
+                {"id": channel_id, "name": "proposals", "bot_ready": True}
             ],
         }
+
+    async def list_guild_summaries(
+        self, guild_ids: tuple[str, ...], user_id: str
+    ) -> list[dict[str, Any]]:
+        if not self.member:
+            return []
+        return [
+            {
+                "guild_id": guild_id,
+                "guild_name": ("Test Guild" if guild_id == "guild" else "Second Guild"),
+                "guild_icon_hash": "",
+                "configured": True,
+                "can_manage": self.admin,
+            }
+            for guild_id in guild_ids
+        ]
 
 
 def web_system(
@@ -96,6 +114,30 @@ def csrf(client: TestClient) -> str:
     return str(SignedTokenCodec("secret").decode(token, "session")["csrf"])
 
 
+def test_guild_view_builds_safe_icons_and_deterministic_fallbacks() -> None:
+    guild = _guild_view(
+        {
+            "guild_id": "123456789012345678",
+            "guild_name": "The Mailroom",
+            "guild_icon_hash": "a_deadbeef",
+        }
+    )
+    assert guild["initials"] == "TM"
+    assert guild["guild_icon_url"] == (
+        "https://cdn.discordapp.com/icons/123456789012345678/a_deadbeef.webp?size=96"
+    )
+    assert (
+        _guild_view(
+            {
+                "guild_id": "123456789012345678",
+                "guild_name": "Nope",
+                "guild_icon_hash": "https://attacker.example/icon",
+            }
+        )["guild_icon_url"]
+        == ""
+    )
+
+
 def test_launch_dashboard_create_and_detail_flow() -> None:
     client, repository, tasks, _ = web_system()
     with client:
@@ -107,6 +149,8 @@ def test_launch_dashboard_create_and_detail_flow() -> None:
         assert "Create proposal" in dashboard.text
         form = client.get("/app/proposals/new?guild=guild")
         assert "Discord preview" in form.text
+        assert "No type" in form.text
+        assert "category tags" in form.text
         response = client.post(
             "/app/proposals",
             data={
@@ -114,12 +158,13 @@ def test_launch_dashboard_create_and_detail_flow() -> None:
                 "guild_id": "guild",
                 "title": "Quiet hours",
                 "context": "No pings after ten.",
-                "proposal_type": "builtin:general",
+                "proposal_type": "",
             },
             follow_redirects=False,
         )
         assert response.status_code == 303
         assert tasks.workspace[-1]["action"] == "create"
+        assert tasks.workspace[-1]["data"]["type_id"] == ""
 
         now = utcnow()
         result = asyncio.run(
@@ -131,8 +176,8 @@ def test_launch_dashboard_create_and_detail_flow() -> None:
                 "Quiet hours",
                 "quiet hours",
                 "No pings after ten.",
-                "builtin:general",
-                "General",
+                "",
+                "",
                 now,
                 now + timedelta(minutes=1),
             )
@@ -161,6 +206,34 @@ def test_production_session_cookie_is_secure_http_only_and_same_site() -> None:
     assert "secure" in cookie
     assert "httponly" in cookie
     assert "samesite=lax" in cookie
+
+
+def test_server_rail_accumulates_launches_and_switches_without_javascript() -> None:
+    client, repository, _, _ = web_system()
+    now = utcnow()
+    repository.guilds["guild-2"] = GuildConfig(
+        guild_id="guild-2",
+        guild_name="Second Guild",
+        output_channel_id="channel-2",
+        proposal_timeout_seconds=60,
+        configured_by="admin",
+        created_at=now,
+        updated_at=now,
+    )
+    with client:
+        login(client)
+        second = client.get("/launch?code=second", follow_redirects=False)
+        assert second.status_code == 303
+        dashboard = client.get("/app?guild=guild-2")
+
+    assert "Test Guild" in dashboard.text
+    assert "Second Guild" in dashboard.text
+    assert 'class="server-button selected"' in dashboard.text
+    assert 'href="/app?guild=guild"' in dashboard.text
+    assert 'href="/app?guild=guild-2"' in dashboard.text
+    assert "onchange=" not in dashboard.text
+    assert "Add another server" in dashboard.text
+    assert 'aria-label="Workspace navigation"' in dashboard.text
 
 
 def test_preferences_settings_types_jobs_and_security_headers() -> None:
@@ -223,6 +296,7 @@ def test_preferences_settings_types_jobs_and_security_headers() -> None:
         assert "Saved." in job.text
         assert job.headers["x-frame-options"] == "DENY"
         assert "frame-ancestors 'none'" in job.headers["content-security-policy"]
+        assert "https://cdn.discordapp.com" in job.headers["content-security-policy"]
         assert job.headers["cache-control"] == "no-store"
         assert "max-age=31536000" in job.headers["strict-transport-security"]
 
@@ -233,6 +307,105 @@ def test_preferences_settings_types_jobs_and_security_headers() -> None:
         assert bad_csrf.status_code == 403
         worker.admin = False
         assert client.get("/app/settings?guild=guild").status_code == 403
+
+
+def test_navigation_theme_controls_and_dialogs_are_csp_safe() -> None:
+    client, repository, _, _ = web_system()
+    with client:
+        login(client)
+        overview = client.get("/app?guild=guild")
+        assert 'aria-current="page"' in overview.text
+        assert "data-theme-toggle" in overview.text
+        assert "/static/theme.js" in overview.text
+
+        now = utcnow()
+        result = asyncio.run(
+            repository.create_proposal(
+                "dialog",
+                "guild",
+                "Test Guild",
+                "channel",
+                "Delete me",
+                "delete me",
+                "",
+                "",
+                "",
+                now,
+                now + timedelta(minutes=1),
+            )
+        )
+        assert result.proposal
+        repository.proposals[result.proposal.id] = replace(
+            result.proposal, message_id="999"
+        )
+        detail = client.get(f"/app/proposals/{result.proposal.id}?guild=guild")
+
+    assert "delete-proposal-dialog" in detail.text
+    assert "data-dialog-open" in detail.text
+    assert "onsubmit=" not in detail.text
+
+
+def test_resolved_history_can_be_archived_and_purged_from_archive() -> None:
+    client, repository, tasks, _ = web_system()
+    now = utcnow()
+    result = asyncio.run(
+        repository.create_proposal(
+            "history",
+            "guild",
+            "Test Guild",
+            "channel",
+            "Old decision",
+            "old decision",
+            "",
+            "",
+            "",
+            now,
+            now + timedelta(minutes=1),
+        )
+    )
+    assert result.proposal
+    terminal = replace(
+        result.proposal,
+        status=ProposalStatus.PASSED,
+        terminal_at=now,
+        message_id="999",
+        effects_complete=True,
+    )
+    repository.proposals[terminal.id] = terminal
+
+    with client:
+        login(client)
+        overview = client.get("/app?guild=guild")
+        detail = client.get(f"/app/proposals/{terminal.id}?guild=guild")
+        archive_post = client.post(
+            f"/app/proposals/{terminal.id}/archive",
+            data={"csrf": csrf(client), "guild_id": "guild"},
+            follow_redirects=False,
+        )
+
+    assert "Old decision" in overview.text
+    assert "View archive" in overview.text
+    assert "archive-proposal-dialog" in detail.text
+    assert archive_post.status_code == 303
+    assert tasks.workspace[-1]["action"] == "archive"
+
+    asyncio.run(repository.archive_proposal(terminal.id, "guild", "admin", now))
+    with client:
+        archived = client.get("/app/archive?guild=guild")
+        archived_detail = client.get(f"/app/proposals/{terminal.id}?guild=guild")
+        purge_post = client.post(
+            f"/app/proposals/{terminal.id}/purge",
+            data={"csrf": csrf(client), "guild_id": "guild"},
+            follow_redirects=False,
+        )
+
+    assert "Old decision" in archived.text
+    assert "History archive" in archived.text
+    assert "purge-proposal-dialog" in archived_detail.text
+    assert "Delete permanently" in archived_detail.text
+    assert "Restore to history" in archived_detail.text
+    assert purge_post.status_code == 303
+    assert tasks.workspace[-1]["action"] == "purge"
 
 
 def test_unconfigured_guild_routes_admin_to_setup() -> None:

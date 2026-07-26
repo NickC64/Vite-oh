@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import secrets
 from dataclasses import dataclass
@@ -10,7 +11,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from viteoh.config import Settings
-from viteoh.domain import GuildConfig, Proposal, ProposalStatus
+from viteoh.domain import Proposal, ProposalStatus
 from viteoh.repository import Repository
 from viteoh.tasks import TaskDispatcher
 from viteoh.workspace_client import WorkspaceWorkerClient, WorkspaceWorkerError
@@ -147,6 +148,7 @@ class Workspace:
                     guild_id,
                     access,
                     configs,
+                    active_page="overview",
                     config=config,
                     active=active,
                     history=history,
@@ -162,7 +164,7 @@ class Workspace:
                 return RedirectResponse(
                     f"/app/settings?guild={guild_id}", status_code=303
                 )
-            types = await self.repository.list_templates(guild_id)
+            types = await self.repository.list_types(guild_id)
             return self.templates.TemplateResponse(
                 request,
                 "proposal_form.html",
@@ -171,8 +173,49 @@ class Workspace:
                     guild_id,
                     access,
                     configs,
+                    active_page="create",
                     config=config,
                     proposal_types=types,
+                ),
+            )
+
+        @router.get("/app/archive", response_class=HTMLResponse)
+        async def proposal_archive(
+            request: Request, guild: str = "", before: int = 0
+        ) -> Response:
+            session, guild_id, access, configs = await self._page_access(request, guild)
+            self._require_admin(access, session.user_id)
+            visible = set(str(item) for item in access["visible_channel_ids"])
+            cursor = (
+                datetime.fromtimestamp(before / 1_000_000, UTC) if before > 0 else None
+            )
+            page = list(
+                await self.repository.list_guild_proposals(
+                    guild_id,
+                    archived=True,
+                    limit=51,
+                    before=cursor,
+                )
+            )
+            proposals = [
+                item for item in page[:50] if item.output_channel_id in visible
+            ]
+            next_before = (
+                int(page[49].created_at.timestamp() * 1_000_000)
+                if len(page) > 50
+                else 0
+            )
+            return self.templates.TemplateResponse(
+                request,
+                "archive.html",
+                self._context(
+                    session,
+                    guild_id,
+                    access,
+                    configs,
+                    active_page="archive",
+                    proposals=proposals,
+                    next_before=next_before,
                 ),
             )
 
@@ -182,7 +225,7 @@ class Workspace:
             guild_id: str = Form(...),
             csrf: str = Form(...),
             title: str = Form(...),
-            proposal_type: str = Form("builtin:general"),
+            proposal_type: str = Form(""),
             context: str = Form(""),
         ) -> Response:
             session = self._require_session(request)
@@ -201,7 +244,7 @@ class Workspace:
                 {
                     "title": title,
                     "context": context,
-                    "type_id": proposal_type,
+                    "type_id": proposal_type.strip(),
                 },
             )
 
@@ -229,6 +272,7 @@ class Workspace:
                     guild_id,
                     access,
                     configs,
+                    active_page="archive" if proposal.archived else "overview",
                     proposal=proposal,
                     discord_url=_proposal_link(proposal),
                 ),
@@ -249,6 +293,51 @@ class Workspace:
                 session, guild_id, "delete", {"proposal_id": proposal_id}
             )
 
+        @router.post("/app/proposals/{proposal_id}/archive")
+        async def archive_proposal(
+            request: Request,
+            proposal_id: str,
+            guild_id: str = Form(...),
+            csrf: str = Form(...),
+        ) -> Response:
+            session = self._require_session(request)
+            self._check_csrf(session, csrf)
+            access = await self._authorize(session, guild_id)
+            self._require_admin(access, session.user_id)
+            return await self._enqueue(
+                session, guild_id, "archive", {"proposal_id": proposal_id}
+            )
+
+        @router.post("/app/proposals/{proposal_id}/purge")
+        async def purge_proposal(
+            request: Request,
+            proposal_id: str,
+            guild_id: str = Form(...),
+            csrf: str = Form(...),
+        ) -> Response:
+            session = self._require_session(request)
+            self._check_csrf(session, csrf)
+            access = await self._authorize(session, guild_id)
+            self._require_admin(access, session.user_id)
+            return await self._enqueue(
+                session, guild_id, "purge", {"proposal_id": proposal_id}
+            )
+
+        @router.post("/app/proposals/{proposal_id}/restore")
+        async def restore_proposal(
+            request: Request,
+            proposal_id: str,
+            guild_id: str = Form(...),
+            csrf: str = Form(...),
+        ) -> Response:
+            session = self._require_session(request)
+            self._check_csrf(session, csrf)
+            access = await self._authorize(session, guild_id)
+            self._require_admin(access, session.user_id)
+            return await self._enqueue(
+                session, guild_id, "restore", {"proposal_id": proposal_id}
+            )
+
         @router.get("/app/preferences", response_class=HTMLResponse)
         async def preferences(request: Request, guild: str = "") -> Response:
             session, guild_id, access, configs = await self._page_access(request, guild)
@@ -264,6 +353,7 @@ class Workspace:
                     guild_id,
                     access,
                     configs,
+                    active_page="preferences",
                     subscribed=subscribed,
                     nudges=nudges,
                 ),
@@ -303,6 +393,7 @@ class Workspace:
                     guild_id,
                     access,
                     configs,
+                    active_page="settings",
                     config=config,
                     output_channels=access["output_channels"],
                 ),
@@ -338,7 +429,7 @@ class Workspace:
         async def types_page(request: Request, guild: str = "") -> Response:
             session, guild_id, access, configs = await self._page_access(request, guild)
             self._require_admin(access, session.user_id)
-            types = await self.repository.list_templates(guild_id)
+            types = await self.repository.list_types(guild_id)
             return self.templates.TemplateResponse(
                 request,
                 "types.html",
@@ -347,6 +438,7 @@ class Workspace:
                     guild_id,
                     access,
                     configs,
+                    active_page="types",
                     proposal_types=types,
                 ),
             )
@@ -402,16 +494,23 @@ class Workspace:
             ):
                 raise HTTPException(404, "Job not found.")
             status = job.status if job else "queued"
+            selected = guild or (job.guild_id if job else "")
+            session, guild_id, access, configs = await self._page_access(
+                request, selected
+            )
             return self.templates.TemplateResponse(
                 request,
                 "job.html",
-                {
-                    "title": "Saving",
-                    "session": session,
-                    "job": job,
-                    "status": status,
-                    "guild_id": guild or (job.guild_id if job else ""),
-                },
+                self._context(
+                    session,
+                    guild_id,
+                    access,
+                    configs,
+                    title="Saving",
+                    active_page="",
+                    job=job,
+                    status=status,
+                ),
             )
 
     async def _enqueue(
@@ -440,29 +539,33 @@ class Workspace:
         WorkspaceSession,
         str,
         dict[str, Any],
-        list[GuildConfig],
+        list[dict[str, Any]],
     ]:
         session = self._require_session(request)
         selected = guild_id or (session.guild_ids[0] if session.guild_ids else "")
         if not selected or selected not in session.guild_ids:
             raise HTTPException(403, "Open Vite-oh from this Discord server first.")
         access = await self._authorize(session, selected)
-        configs = list(
-            await self.repository.list_guild_configs(list(session.guild_ids))
+        summaries = await self.worker.list_guild_summaries(
+            session.guild_ids, session.user_id
         )
-        if not any(item.guild_id == selected for item in configs):
-            configs.append(
-                GuildConfig(
-                    guild_id=selected,
-                    guild_name=str(access["guild_name"]),
-                    output_channel_id="",
-                    proposal_timeout_seconds=0,
-                    configured_by="",
-                    created_at=_epoch(),
-                    updated_at=_epoch(),
-                )
+        if not any(str(item.get("guild_id")) == selected for item in summaries):
+            summaries.append(
+                {
+                    "guild_id": selected,
+                    "guild_name": str(access["guild_name"]),
+                    "guild_icon_hash": str(access.get("guild_icon_hash") or ""),
+                    "configured": (
+                        await self.repository.get_guild_config(selected) is not None
+                    ),
+                    "can_manage": bool(access.get("can_manage")),
+                }
             )
-        return session, selected, access, configs
+        guilds = sorted(
+            (_guild_view(item) for item in summaries),
+            key=lambda item: str(item["guild_name"]).casefold(),
+        )
+        return session, selected, access, guilds
 
     async def _authorize(
         self, session: WorkspaceSession, guild_id: str
@@ -539,7 +642,7 @@ class Workspace:
         session: WorkspaceSession,
         guild_id: str,
         access: dict[str, Any],
-        configs: list[GuildConfig],
+        guilds: list[dict[str, Any]],
         **extra: Any,
     ) -> dict[str, Any]:
         return {
@@ -551,7 +654,17 @@ class Workspace:
                 access.get("can_manage")
                 or session.user_id == self.settings.discord_owner_user_id
             ),
-            "guilds": configs,
+            "guilds": guilds,
+            "current_guild": next(
+                (item for item in guilds if str(item.get("guild_id", "")) == guild_id),
+                _guild_view(
+                    {
+                        "guild_id": guild_id,
+                        "guild_name": access["guild_name"],
+                        "guild_icon_hash": access.get("guild_icon_hash", ""),
+                    }
+                ),
+            ),
             **extra,
         }
 
@@ -578,7 +691,33 @@ def _proposal_link(proposal: Proposal) -> str:
     )
 
 
-def _epoch() -> Any:
-    from datetime import UTC, datetime
-
-    return datetime(1970, 1, 1, tzinfo=UTC)
+def _guild_view(item: dict[str, Any]) -> dict[str, Any]:
+    guild_id = str(item.get("guild_id") or "")
+    name = str(item.get("guild_name") or guild_id)
+    icon_hash = str(item.get("guild_icon_hash") or "")
+    digest = icon_hash[2:] if icon_hash.startswith("a_") else icon_hash
+    valid_icon = (
+        guild_id.isdigit()
+        and bool(digest)
+        and len(digest) <= 64
+        and all(character in "0123456789abcdef" for character in digest.casefold())
+    )
+    initials = (
+        "".join(word[0] for word in name.split() if word and word[0].isalnum())[
+            :2
+        ].upper()
+        or "?"
+    )
+    hue = int(hashlib.sha256(guild_id.encode()).hexdigest()[:4], 16) % 360
+    return {
+        **item,
+        "guild_id": guild_id,
+        "guild_name": name,
+        "guild_icon_url": (
+            f"https://cdn.discordapp.com/icons/{guild_id}/{icon_hash}.webp?size=96"
+            if valid_icon
+            else ""
+        ),
+        "initials": initials,
+        "fallback_tone": hue // 45,
+    }

@@ -1,0 +1,4 @@
+Selected SVG paths are vendored from Lucide 1.16.0:
+https://github.com/lucide-icons/lucide/releases/tag/1.16.0
+
+Only the icons used by the Vite-oh workspace are included.

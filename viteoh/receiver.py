@@ -11,7 +11,7 @@ from viteoh.components import (
     user_select,
 )
 from viteoh.config import Settings
-from viteoh.domain import ProposalStatus, ProposalTemplate
+from viteoh.domain import ProposalStatus, ProposalType
 from viteoh.repository import Repository
 from viteoh.security import SignatureVerifier
 from viteoh.tasks import TaskDispatcher
@@ -143,19 +143,19 @@ class InteractionReceiver:
             )
 
         if path == ("proposal", "type", "create"):
-            return _template_modal(None)
+            return _type_modal(None)
 
-        template = await self.repository.get_template(
+        proposal_type = await self.repository.get_type(
             guild_id, str(options.get("type", ""))
         )
-        if not template or template.builtin:
+        if not proposal_type or proposal_type.builtin:
             return _message("Select a valid custom proposal type from this server.")
         if path == ("proposal", "type", "edit"):
-            return _template_modal(template)
+            return _type_modal(proposal_type)
         return _message(
-            f"Delete proposal type **{template.name}**? "
+            f"Delete proposal type **{proposal_type.name}**? "
             "Existing proposals will be unchanged.",
-            delete_confirmation_buttons("template", template.id),
+            delete_confirmation_buttons("type", proposal_type.id),
         )
 
     async def _autocomplete(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -189,9 +189,11 @@ class InteractionReceiver:
                 return _choices(
                     [
                         {
-                            "name": f"{proposal.title} · {proposal.template_name}"[
-                                :100
-                            ],
+                            "name": (
+                                f"{proposal.title} · {proposal.type_name}"
+                                if proposal.type_name
+                                else proposal.title
+                            )[:100],
                             "value": proposal.id,
                         }
                         for proposal in proposal_matches
@@ -205,15 +207,17 @@ class InteractionReceiver:
                 }
                 and name == "type"
             ):
-                templates = await self.repository.list_templates(guild_id)
+                proposal_types = await self.repository.list_types(guild_id)
                 if path != ("proposal", "create"):
-                    templates = [item for item in templates if not item.builtin]
-                template_matches = [
-                    template
-                    for template in templates
+                    proposal_types = [
+                        item for item in proposal_types if not item.builtin
+                    ]
+                type_matches = [
+                    proposal_type
+                    for proposal_type in proposal_types
                     if not needle
-                    or needle in template.normalized_name
-                    or needle in template.description.casefold()
+                    or needle in proposal_type.normalized_name
+                    or needle in proposal_type.description.casefold()
                 ][:25]
                 return _choices(
                     [
@@ -221,7 +225,7 @@ class InteractionReceiver:
                             "name": f"{item.name} — {item.description}"[:100],
                             "value": item.id,
                         }
-                        for item in template_matches
+                        for item in type_matches
                     ]
                 )
         except Exception:
@@ -269,24 +273,24 @@ def _veto_modal(proposal_id: str) -> dict[str, Any]:
     )
 
 
-def _template_modal(template: ProposalTemplate | None) -> dict[str, Any]:
-    action = "edit" if template else "create"
-    template_id = template.id if template else "new"
+def _type_modal(proposal_type: ProposalType | None) -> dict[str, Any]:
+    action = "edit" if proposal_type else "create"
+    type_id = proposal_type.id if proposal_type else "new"
     return modal(
         f"{action.title()} proposal type",
-        f"template-{action}|{template_id}",
+        f"type-{action}|{type_id}",
         text_input(
             "name",
             "Type name",
             required=True,
             max_length=50,
-            value=template.name if template else None,
+            value=proposal_type.name if proposal_type else None,
         ),
         text_input(
             "description",
             "Short description",
             required=True,
             max_length=100,
-            value=template.description if template else None,
+            value=proposal_type.description if proposal_type else None,
         ),
     )

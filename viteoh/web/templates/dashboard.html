@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "icons.html" import icon %}
 {% block content %}
 <section class="page-heading">
   <div>
@@ -20,14 +21,17 @@
 </section>
 {% else %}
 <section>
-  <h2>Active</h2>
+  <div class="section-heading"><h2>Active proposals</h2><span>{{ active|length }} open</span></div>
   <div class="card-grid">
     {% for proposal in active %}
     <a class="proposal-card active" href="/app/proposals/{{ proposal.id }}?guild={{ guild_id }}">
-      <span class="type">{{ proposal.template_name }} proposal</span>
+      {% if proposal.type_name %}<span class="type-tag">{{ proposal.type_name }}</span>{% endif %}
       <strong>{{ proposal.title }}</strong>
-      <span>Passes <time data-relative="{{ proposal.deadline_at.isoformat() }}">{{ proposal.deadline_at.strftime("%b %-d at %-I:%M %p") }}</time></span>
-      <span>{{ proposal.acknowledgement_count }} acknowledged</span>
+      {% if proposal.context %}<span class="proposal-context-preview">{{ proposal.context }}</span>{% endif %}
+      <span class="proposal-meta">
+        <span>Passes <time data-relative="{{ proposal.deadline_at.isoformat() }}">{{ proposal.deadline_at.strftime("%b %-d at %-I:%M %p") }}</time></span>
+        <span>{{ proposal.acknowledgement_count }} acknowledged</span>
+      </span>
     </a>
     {% else %}
     <div class="panel empty"><p>No active proposals. This is a suspiciously peaceful moment.</p></div>
@@ -36,14 +40,18 @@
 </section>
 
 <section>
-  <h2>History</h2>
+  <div class="section-heading">
+    <h2>History</h2>
+    {% if can_manage %}<a href="/app/archive?guild={{ guild_id }}">View archive</a>{% endif %}
+  </div>
   <div class="history-list">
     {% for proposal in history %}
     <a href="/app/proposals/{{ proposal.id }}?guild={{ guild_id }}">
       <span class="status {{ proposal.status.value }}">{{ proposal.status.value }}</span>
       <strong>{{ proposal.title }}</strong>
-      <span>{{ proposal.template_name }}</span>
+      <span class="history-type">{% if proposal.type_name %}{{ proposal.type_name }}{% else %}No type{% endif %}</span>
       <time>{{ proposal.created_at.strftime("%Y-%m-%d") }}</time>
+      {{ icon("chevron", 16) }}
     </a>
     {% else %}
     <div class="panel empty"><p>Resolved proposals will collect here.</p></div>

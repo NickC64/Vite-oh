@@ -20,6 +20,9 @@ class WorkspaceWorkerClient:
         self.settings = settings
         self.client = client or httpx.AsyncClient(timeout=10.0)
         self._access_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+        self._guild_cache: dict[
+            tuple[str, tuple[str, ...]], tuple[float, list[dict[str, Any]]]
+        ] = {}
 
     async def close(self) -> None:
         await self.client.aclose()
@@ -42,6 +45,28 @@ class WorkspaceWorkerClient:
             dict(access),
         )
         return access
+
+    async def list_guild_summaries(
+        self, guild_ids: tuple[str, ...], user_id: str
+    ) -> list[dict[str, Any]]:
+        key = (user_id, guild_ids)
+        cached = self._guild_cache.get(key)
+        now = time.monotonic()
+        if cached and cached[0] > now:
+            return [dict(item) for item in cached[1]]
+        result = await self._post(
+            "/internal/workspace/guilds",
+            {"guild_ids": list(guild_ids), "user_id": user_id},
+        )
+        raw = result.get("guilds")
+        if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
+            raise WorkspaceWorkerError("The worker returned invalid server data.")
+        summaries = [dict(item) for item in raw]
+        self._guild_cache[key] = (
+            now + self.settings.workspace_auth_cache_seconds,
+            summaries,
+        )
+        return [dict(item) for item in summaries]
 
     async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         headers: dict[str, str] = {}

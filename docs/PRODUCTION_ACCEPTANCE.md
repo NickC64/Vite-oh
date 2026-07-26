@@ -21,8 +21,9 @@ Run `/proposal` in the testing guild. Confirm its ephemeral launch works once,
 fails on reuse, and does not ask for another Discord login. In Workspace
 Settings choose `#test-output` and one minute.
 
-1. Create General and New member proposals in the workspace and confirm their embeds contain the
-   type, unchanged title, context, deadline, and zero acknowledgements.
+1. Create one untyped proposal and one tagged **New member** proposal. Confirm
+   their embeds contain the unchanged title, context, deadline, and zero
+   acknowledgements, and that only the tagged proposal displays a type.
 2. Create, edit, use, and delete a custom proposal type. Confirm the created
    proposal retains its original type snapshot.
 3. Enable new-proposal DMs in Workspace Preferences and confirm a DM arrives.
@@ -33,6 +34,9 @@ Settings choose `#test-output` and one minute.
    outcome reply.
 7. Create another proposal, delete its deadline task, run reconciliation, and
    confirm a replacement task is recorded.
+8. Archive a resolved proposal and confirm it leaves the main history. Restore
+   it once, archive it again, then delete it permanently and confirm its Discord
+   messages and private Firestore child records are removed.
 8. Create a third proposal and veto it with an optional reason just before
    expiry. Confirm the reason is public and the vetoing identity is absent.
 9. Attempt a veto after expiry and confirm it is rejected.
@@ -55,7 +59,8 @@ minutes. A later configuration change affects only proposals created afterward.
 4. Stop the old Gateway process.
 5. Install the same application in every guild using the `bot` and
    `applications.commands` scopes.
-6. Exercise the workspace, both built-in types, one custom type, Nudge,
+6. Exercise the workspace, an untyped proposal, the built-in New member type,
+   one custom type, Nudge,
    Acknowledge, Subscribe, Veto with reason, and each terminal outcome
    independently in test and live guilds.
 

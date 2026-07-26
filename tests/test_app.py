@@ -47,6 +47,20 @@ class StubProcessor:
             "is_member": True,
         }
 
+    async def workspace_guild_summaries(
+        self, guild_ids: list[str], user_id: str
+    ) -> dict[str, object]:
+        return {
+            "guilds": [
+                {
+                    "guild_id": guild_id,
+                    "guild_name": f"Server {guild_id}",
+                    "user_id": user_id,
+                }
+                for guild_id in guild_ids
+            ]
+        }
+
 
 def test_receiver_app_routes() -> None:
     app = create_app(
@@ -92,4 +106,11 @@ def test_worker_app_routes() -> None:
             "/internal/workspace/access",
             json={"guild_id": "guild", "user_id": "user"},
         ).json()["is_member"]
+        assert (
+            client.post(
+                "/internal/workspace/guilds",
+                json={"guild_ids": ["guild"], "user_id": "user"},
+            ).json()["guilds"][0]["guild_id"]
+            == "guild"
+        )
         assert client.post("/interactions").status_code == 404

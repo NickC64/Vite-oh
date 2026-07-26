@@ -62,9 +62,17 @@ identity is neither stored nor shown. Announcements are rich embeds. Terminal
 states update the canonical embed and create one reply so the channel receives
 fresh activity without losing its clean source of truth.
 
-Custom proposal types contain a name and short description. The selected type is
-shown above the proposal title. Proposals snapshot the type name, so later type
-edits or deletion never rewrite history.
+Proposal types are optional, single-category tags used to organize proposals.
+They never rewrite titles, require fields, or otherwise control creation. Servers
+can add custom types with a name and short description. Proposals snapshot the
+selected type name, so later type edits or deletion never rewrite history.
+
+Members with Manage Server permission can move resolved proposals from the main
+history into a private management archive. Permanently deleting an archived
+proposal removes its Firestore record and private activity subcollections, then
+best-effort removes its canonical and outcome messages from Discord. Active
+proposals must be resolved before they can be archived, and archived proposals
+can be restored to the main history.
 
 The bot role needs **View Channel**, **Send Messages**, **Embed Links**, and
 **Read Message History** in the configured proposal channel. Private channels
@@ -160,9 +168,15 @@ Terraform state, or GitHub.
    `applications.commands` scopes.
 7. Run `/proposal` in the test server, open **Settings**, choose the test
    channel, and set one minute. Repeat in the live server with 2,880 minutes.
-8. Smoke-test the workspace, both built-in types, a custom type, preferences,
-   the Discord Nudge picker, acknowledgement, an anonymous veto reason,
-   terminal replies, and deletion independently in both servers.
+8. Smoke-test the workspace with an untyped proposal, the built-in New member
+   type, and a custom type, plus preferences, the Discord Nudge picker,
+   acknowledgement, an anonymous veto reason, terminal replies, and deletion
+   independently in both servers.
+
+This schema intentionally has no compatibility layer for the earlier pilot data.
+Before deploying it, delete the disposable Firestore test documents so the new
+`guilds/*/types`, `guilds/*/type_names`, and proposal `type_id`/`type_name`
+fields start cleanly.
 
 No Discord OAuth redirect URI or OAuth client secret is required. Authentication
 is the signed Discord interaction followed by the short-lived, one-time launch.

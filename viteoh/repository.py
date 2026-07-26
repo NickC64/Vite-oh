@@ -15,13 +15,13 @@ from viteoh.domain import (
     Proposal,
     ProposalActionResult,
     ProposalStatus,
-    ProposalTemplate,
-    TemplateMutationResult,
+    ProposalType,
     TransitionResult,
+    TypeMutationResult,
     WorkspaceJob,
     WorkspaceLaunch,
 )
-from viteoh.templates import BUILTIN_TEMPLATES, MAX_CUSTOM_TEMPLATES, builtin_template
+from viteoh.proposal_types import BUILTIN_TYPES, MAX_CUSTOM_TYPES, builtin_type
 
 
 def normalize_title(value: str) -> str:
@@ -61,8 +61,8 @@ class Repository(Protocol):
         title: str,
         normalized_title: str,
         context: str,
-        template_id: str,
-        template_name: str,
+        type_id: str,
+        type_name: str,
         created_at: datetime,
         deadline_at: datetime,
     ) -> CreateProposalResult: ...
@@ -79,9 +79,22 @@ class Repository(Protocol):
         self,
         guild_id: str,
         *,
+        archived: bool = False,
         limit: int = 50,
         before: datetime | None = None,
     ) -> Sequence[Proposal]: ...
+
+    async def archive_proposal(
+        self, proposal_id: str, guild_id: str, user_id: str, now: datetime
+    ) -> ProposalActionResult: ...
+
+    async def restore_archived_proposal(
+        self, proposal_id: str, guild_id: str
+    ) -> ProposalActionResult: ...
+
+    async def purge_archived_proposal(
+        self, proposal_id: str, guild_id: str
+    ) -> ProposalActionResult: ...
 
     async def list_pending_terminal_effects(self) -> Sequence[Proposal]: ...
 
@@ -109,30 +122,22 @@ class Repository(Protocol):
         veto_reason: str = "",
     ) -> TransitionResult: ...
 
-    async def get_template(
-        self, guild_id: str, template_id: str
-    ) -> ProposalTemplate | None: ...
+    async def get_type(self, guild_id: str, type_id: str) -> ProposalType | None: ...
 
-    async def list_templates(self, guild_id: str) -> Sequence[ProposalTemplate]: ...
+    async def list_types(self, guild_id: str) -> Sequence[ProposalType]: ...
 
-    async def save_template(
+    async def save_type(
         self,
         guild_id: str,
-        template_id: str | None,
+        type_id: str | None,
         name: str,
         normalized_name: str,
         description: str,
-        subject_label: str,
-        context_label: str,
-        title_format: str,
-        context_required: bool,
         user_id: str,
         now: datetime,
-    ) -> TemplateMutationResult: ...
+    ) -> TypeMutationResult: ...
 
-    async def delete_template(
-        self, guild_id: str, template_id: str
-    ) -> TemplateMutationResult: ...
+    async def delete_type(self, guild_id: str, type_id: str) -> TypeMutationResult: ...
 
     async def acknowledge(
         self, proposal_id: str, user_id: str, now: datetime
@@ -248,7 +253,7 @@ class FirestoreRepository:
             "configured_by": configured_by,
             "created_at": created_at,
             "updated_at": now,
-            "custom_template_count": int(previous_data.get("custom_template_count", 0)),
+            "custom_type_count": int(previous_data.get("custom_type_count", 0)),
         }
         await ref.set(data)
         return GuildConfig.from_document(guild_id, data)
@@ -262,8 +267,8 @@ class FirestoreRepository:
         title: str,
         normalized_title: str,
         context: str,
-        template_id: str,
-        template_name: str,
+        type_id: str,
+        type_name: str,
         created_at: datetime,
         deadline_at: datetime,
     ) -> CreateProposalResult:
@@ -315,8 +320,8 @@ class FirestoreRepository:
                 "title": title,
                 "normalized_title": normalized_title,
                 "context": context,
-                "template_id": template_id,
-                "template_name": template_name,
+                "type_id": type_id,
+                "type_name": type_name,
                 "reservation_id": reserve_id,
                 "status": ProposalStatus.ACTIVE.value,
                 "created_at": created_at,
@@ -333,6 +338,9 @@ class FirestoreRepository:
                 "render_version": 0,
                 "veto_reason": "",
                 "outcome_message_id": None,
+                "archived": False,
+                "archived_at": None,
+                "archived_by": "",
             }
             transaction.create(proposal_ref, proposal_data)
             transaction.create(
@@ -391,12 +399,14 @@ class FirestoreRepository:
         self,
         guild_id: str,
         *,
+        archived: bool = False,
         limit: int = 50,
         before: datetime | None = None,
     ) -> Sequence[Proposal]:
         query = (
             self.client.collection("proposals")
             .where(filter=FieldFilter("guild_id", "==", guild_id))
+            .where(filter=FieldFilter("archived", "==", archived))
             .order_by("created_at", direction=firestore.Query.DESCENDING)
         )
         if before is not None:
@@ -407,76 +417,185 @@ class FirestoreRepository:
             async for snapshot in query.stream()
         ]
 
-    async def get_template(
-        self, guild_id: str, template_id: str
-    ) -> ProposalTemplate | None:
-        builtin = builtin_template(template_id)
+    async def archive_proposal(
+        self, proposal_id: str, guild_id: str, user_id: str, now: datetime
+    ) -> ProposalActionResult:
+        proposal_ref = self.client.collection("proposals").document(proposal_id)
+        transaction = self.client.transaction()
+
+        @firestore.async_transactional
+        async def archive_in_transaction(transaction: Any) -> ProposalActionResult:
+            snapshot = await proposal_ref.get(transaction=transaction)
+            if not snapshot.exists:
+                return ProposalActionResult(None, False, "not_found")
+            proposal = Proposal.from_document(snapshot.id, snapshot.to_dict() or {})
+            if proposal.guild_id != guild_id:
+                return ProposalActionResult(None, False, "not_found")
+            if proposal.status is ProposalStatus.ACTIVE:
+                return ProposalActionResult(proposal, False, "active")
+            if not proposal.effects_complete:
+                return ProposalActionResult(proposal, False, "effects_pending")
+            if proposal.archived:
+                return ProposalActionResult(proposal, False, "already_archived")
+            transaction.update(
+                proposal_ref,
+                {
+                    "archived": True,
+                    "archived_at": now,
+                    "archived_by": user_id,
+                },
+            )
+            return ProposalActionResult(
+                replace(
+                    proposal,
+                    archived=True,
+                    archived_at=now,
+                    archived_by=user_id,
+                ),
+                True,
+                "archived",
+            )
+
+        return await archive_in_transaction(transaction)
+
+    async def restore_archived_proposal(
+        self, proposal_id: str, guild_id: str
+    ) -> ProposalActionResult:
+        proposal_ref = self.client.collection("proposals").document(proposal_id)
+        transaction = self.client.transaction()
+
+        @firestore.async_transactional
+        async def restore_in_transaction(transaction: Any) -> ProposalActionResult:
+            snapshot = await proposal_ref.get(transaction=transaction)
+            if not snapshot.exists:
+                return ProposalActionResult(None, False, "not_found")
+            proposal = Proposal.from_document(snapshot.id, snapshot.to_dict() or {})
+            if proposal.guild_id != guild_id:
+                return ProposalActionResult(None, False, "not_found")
+            if not proposal.archived:
+                return ProposalActionResult(proposal, False, "not_archived")
+            transaction.update(
+                proposal_ref,
+                {
+                    "archived": False,
+                    "archived_at": None,
+                    "archived_by": "",
+                },
+            )
+            return ProposalActionResult(
+                replace(
+                    proposal,
+                    archived=False,
+                    archived_at=None,
+                    archived_by="",
+                ),
+                True,
+                "restored",
+            )
+
+        return await restore_in_transaction(transaction)
+
+    async def purge_archived_proposal(
+        self, proposal_id: str, guild_id: str
+    ) -> ProposalActionResult:
+        proposal_ref = self.client.collection("proposals").document(proposal_id)
+        snapshot = await proposal_ref.get()
+        if not snapshot.exists:
+            return ProposalActionResult(None, False, "not_found")
+        proposal = Proposal.from_document(snapshot.id, snapshot.to_dict() or {})
+        if proposal.guild_id != guild_id:
+            return ProposalActionResult(None, False, "not_found")
+        if not proposal.archived or proposal.status is ProposalStatus.ACTIVE:
+            return ProposalActionResult(proposal, False, "not_archived")
+        if not proposal.effects_complete:
+            return ProposalActionResult(proposal, False, "effects_pending")
+
+        for collection_name in (
+            "acknowledgements",
+            "nudges",
+            "subscribers",
+            "notifications",
+        ):
+            async for child in proposal_ref.collection(collection_name).stream():
+                await child.reference.delete()
+        interaction_query = self.client.collection("interactions").where(
+            filter=FieldFilter("proposal_id", "==", proposal_id)
+        )
+        async for interaction in interaction_query.stream():
+            await interaction.reference.delete()
+        await (
+            self.client.collection("active_names")
+            .document(proposal.reservation_id)
+            .delete()
+        )
+        await proposal_ref.delete()
+        return ProposalActionResult(proposal, True, "purged")
+
+    async def get_type(self, guild_id: str, type_id: str) -> ProposalType | None:
+        builtin = builtin_type(type_id)
         if builtin:
             return replace(builtin, guild_id=guild_id)
         snapshot = await (
             self.client.collection("guilds")
             .document(guild_id)
-            .collection("templates")
-            .document(template_id)
+            .collection("types")
+            .document(type_id)
             .get()
         )
         if not snapshot.exists:
             return None
-        return ProposalTemplate.from_document(
+        return ProposalType.from_document(
             guild_id, snapshot.id, snapshot.to_dict() or {}
         )
 
-    async def list_templates(self, guild_id: str) -> Sequence[ProposalTemplate]:
+    async def list_types(self, guild_id: str) -> Sequence[ProposalType]:
         custom = [
-            ProposalTemplate.from_document(
-                guild_id, snapshot.id, snapshot.to_dict() or {}
-            )
+            ProposalType.from_document(guild_id, snapshot.id, snapshot.to_dict() or {})
             async for snapshot in (
                 self.client.collection("guilds")
                 .document(guild_id)
-                .collection("templates")
+                .collection("types")
                 .stream()
             )
         ]
         return [
-            *(replace(template, guild_id=guild_id) for template in BUILTIN_TEMPLATES),
-            *sorted(custom, key=lambda template: template.normalized_name),
+            *(
+                replace(proposal_type, guild_id=guild_id)
+                for proposal_type in BUILTIN_TYPES
+            ),
+            *sorted(custom, key=lambda proposal_type: proposal_type.normalized_name),
         ]
 
-    async def save_template(
+    async def save_type(
         self,
         guild_id: str,
-        template_id: str | None,
+        type_id: str | None,
         name: str,
         normalized_name: str,
         description: str,
-        subject_label: str,
-        context_label: str,
-        title_format: str,
-        context_required: bool,
         user_id: str,
         now: datetime,
-    ) -> TemplateMutationResult:
-        if template_id and builtin_template(template_id):
-            return TemplateMutationResult(None, False, "builtin")
-        template_id = template_id or str(uuid.uuid4())
+    ) -> TypeMutationResult:
+        if type_id and builtin_type(type_id):
+            return TypeMutationResult(None, False, "builtin")
+        type_id = type_id or str(uuid.uuid4())
         guild_ref = self.client.collection("guilds").document(guild_id)
-        template_ref = guild_ref.collection("templates").document(template_id)
+        type_ref = guild_ref.collection("types").document(type_id)
         name_id = hashlib.sha256(normalized_name.encode()).hexdigest()
-        name_ref = guild_ref.collection("template_names").document(name_id)
+        name_ref = guild_ref.collection("type_names").document(name_id)
         transaction = self.client.transaction()
 
         @firestore.async_transactional
-        async def save_in_transaction(transaction: Any) -> TemplateMutationResult:
+        async def save_in_transaction(transaction: Any) -> TypeMutationResult:
             guild_snapshot = await guild_ref.get(transaction=transaction)
-            existing = await template_ref.get(transaction=transaction)
+            existing = await type_ref.get(transaction=transaction)
             claimed_name = await name_ref.get(transaction=transaction)
             if not guild_snapshot.exists:
-                return TemplateMutationResult(None, False, "unconfigured")
+                return TypeMutationResult(None, False, "unconfigured")
             existing_data = existing.to_dict() or {}
             old_normalized = str(existing_data.get("normalized_name", ""))
             old_name_ref = (
-                guild_ref.collection("template_names").document(
+                guild_ref.collection("type_names").document(
                     hashlib.sha256(old_normalized.encode()).hexdigest()
                 )
                 if old_normalized and old_normalized != normalized_name
@@ -487,17 +606,14 @@ class FirestoreRepository:
                 if old_name_ref is not None
                 else None
             )
-            count = int(
-                (guild_snapshot.to_dict() or {}).get("custom_template_count", 0)
-            )
-            if not existing.exists and count >= MAX_CUSTOM_TEMPLATES:
-                return TemplateMutationResult(None, False, "limit")
+            count = int((guild_snapshot.to_dict() or {}).get("custom_type_count", 0))
+            if not existing.exists and count >= MAX_CUSTOM_TYPES:
+                return TypeMutationResult(None, False, "limit")
             if (
                 claimed_name.exists
-                and str((claimed_name.to_dict() or {}).get("template_id", ""))
-                != template_id
+                and str((claimed_name.to_dict() or {}).get("type_id", "")) != type_id
             ):
-                return TemplateMutationResult(None, False, "duplicate_name")
+                return TypeMutationResult(None, False, "duplicate_name")
 
             created_at = existing_data.get("created_at", now)
             created_by = str(existing_data.get("created_by", user_id))
@@ -505,70 +621,56 @@ class FirestoreRepository:
                 "name": name,
                 "normalized_name": normalized_name,
                 "description": description,
-                "subject_label": subject_label,
-                "context_label": context_label,
-                "title_format": title_format,
-                "context_required": context_required,
                 "created_by": created_by,
                 "updated_by": user_id,
                 "created_at": created_at,
                 "updated_at": now,
             }
-            transaction.set(template_ref, data)
-            transaction.set(name_ref, {"template_id": template_id})
+            transaction.set(type_ref, data)
+            transaction.set(name_ref, {"type_id": type_id})
             if old_name_ref is not None and old_claim and old_claim.exists:
-                if (
-                    str((old_claim.to_dict() or {}).get("template_id", ""))
-                    == template_id
-                ):
+                if str((old_claim.to_dict() or {}).get("type_id", "")) == type_id:
                     transaction.delete(old_name_ref)
             if not existing.exists:
-                transaction.update(guild_ref, {"custom_template_count": count + 1})
-            return TemplateMutationResult(
-                ProposalTemplate.from_document(guild_id, template_id, data),
+                transaction.update(guild_ref, {"custom_type_count": count + 1})
+            return TypeMutationResult(
+                ProposalType.from_document(guild_id, type_id, data),
                 True,
                 "created" if not existing.exists else "updated",
             )
 
         return await save_in_transaction(transaction)
 
-    async def delete_template(
-        self, guild_id: str, template_id: str
-    ) -> TemplateMutationResult:
-        if builtin_template(template_id):
-            return TemplateMutationResult(None, False, "builtin")
+    async def delete_type(self, guild_id: str, type_id: str) -> TypeMutationResult:
+        if builtin_type(type_id):
+            return TypeMutationResult(None, False, "builtin")
         guild_ref = self.client.collection("guilds").document(guild_id)
-        template_ref = guild_ref.collection("templates").document(template_id)
+        type_ref = guild_ref.collection("types").document(type_id)
         transaction = self.client.transaction()
 
         @firestore.async_transactional
-        async def delete_in_transaction(transaction: Any) -> TemplateMutationResult:
+        async def delete_in_transaction(transaction: Any) -> TypeMutationResult:
             guild_snapshot = await guild_ref.get(transaction=transaction)
-            snapshot = await template_ref.get(transaction=transaction)
+            snapshot = await type_ref.get(transaction=transaction)
             if not snapshot.exists:
-                return TemplateMutationResult(None, False, "not_found")
-            template = ProposalTemplate.from_document(
+                return TypeMutationResult(None, False, "not_found")
+            proposal_type = ProposalType.from_document(
                 guild_id, snapshot.id, snapshot.to_dict() or {}
             )
-            name_ref = guild_ref.collection("template_names").document(
-                hashlib.sha256(template.normalized_name.encode()).hexdigest()
+            name_ref = guild_ref.collection("type_names").document(
+                hashlib.sha256(proposal_type.normalized_name.encode()).hexdigest()
             )
             name_snapshot = await name_ref.get(transaction=transaction)
-            count = int(
-                (guild_snapshot.to_dict() or {}).get("custom_template_count", 0)
-            )
-            transaction.delete(template_ref)
+            count = int((guild_snapshot.to_dict() or {}).get("custom_type_count", 0))
+            transaction.delete(type_ref)
             if (
                 name_snapshot.exists
-                and str((name_snapshot.to_dict() or {}).get("template_id", ""))
-                == template_id
+                and str((name_snapshot.to_dict() or {}).get("type_id", "")) == type_id
             ):
                 transaction.delete(name_ref)
             if guild_snapshot.exists:
-                transaction.update(
-                    guild_ref, {"custom_template_count": max(0, count - 1)}
-                )
-            return TemplateMutationResult(template, True, "deleted")
+                transaction.update(guild_ref, {"custom_type_count": max(0, count - 1)})
+            return TypeMutationResult(proposal_type, True, "deleted")
 
         return await delete_in_transaction(transaction)
 
