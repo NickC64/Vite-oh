@@ -64,6 +64,33 @@ class TaskDispatcher:
         except AlreadyExists:
             return name
 
+    async def enqueue_workspace(self, payload: dict[str, Any]) -> str:
+        job_id = str(payload["id"])
+        parent = self._queue_path(self.settings.workspace_queue)
+        name = self.client.task_path(
+            self.settings.google_cloud_project,
+            self.settings.google_cloud_location,
+            self.settings.workspace_queue,
+            f"workspace-{job_id}",
+        )
+        task = {
+            "name": name,
+            "http_request": {
+                "http_method": tasks_v2.HttpMethod.POST,
+                "url": f"{self.settings.worker_url}/tasks/workspace",
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps(payload).encode(),
+                "oidc_token": self._oidc(),
+            },
+        }
+        try:
+            created = await self.client.create_task(
+                request={"parent": parent, "task": task}
+            )
+            return created.name
+        except AlreadyExists:
+            return name
+
     async def ensure_deadline(
         self,
         proposal_id: str,

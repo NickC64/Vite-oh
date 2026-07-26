@@ -5,3 +5,11 @@ output "interaction_endpoint_url" {
 output "worker_url" {
   value = local.worker_url
 }
+
+output "workspace_url" {
+  value = local.workspace_url
+}
+
+output "workspace_health_url" {
+  value = "${local.workspace_url}/health"
+}

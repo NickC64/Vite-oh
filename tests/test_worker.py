@@ -19,6 +19,8 @@ def system() -> tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDisco
     settings = Settings(
         discord_application_id="app",
         discord_owner_user_id="owner",
+        workspace_signing_secret="secret",
+        workspace_url="https://workspace.example",
     )
     now = utcnow()
     repository.guilds["guild"] = GuildConfig(
@@ -187,6 +189,23 @@ async def test_reconciliation_repairs_missing_task(
     tasks.missing.add(proposal.deadline_task_name)
     result = await processor.reconcile()
     assert result["repaired"] == 1
+
+
+async def test_reconciliation_upgrades_legacy_active_announcement_once(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+) -> None:
+    processor, repository, _, discord = system
+    await processor.process(command("new", value="Alice"))
+    proposal = next(iter(repository.proposals.values()))
+    repository.proposals[proposal.id] = replace(proposal, render_version=0)
+
+    first = await processor.reconcile()
+    second = await processor.reconcile()
+
+    assert first["rendered"] == 1
+    assert second["rendered"] == 0
+    assert repository.proposals[proposal.id].render_version == 1
+    assert discord.synced[-1].id == proposal.id
 
 
 async def test_deadline_and_veto_race_has_one_terminal_winner(
@@ -388,6 +407,30 @@ async def test_nudge_is_anonymous_deduplicated_and_respects_preference(
         )
     )
     assert "disabled" in discord.responses[-1]
+
+
+async def test_nudge_user_selector_reuses_anonymous_delivery(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+) -> None:
+    processor, repository, _, discord = system
+    await processor.process(command("new", value="Review the bylaws"))
+    proposal = next(iter(repository.proposals.values()))
+    await processor.process(
+        {
+            "id": "nudge-select",
+            "type": 3,
+            "token": "token",
+            "guild_id": "guild",
+            "member": {"user": {"id": "requester"}},
+            "data": {
+                "custom_id": component_id("proposal", "nudge-select", proposal.id),
+                "values": ["target"],
+            },
+        }
+    )
+    assert repository.nudges[proposal.id]["target"] == "delivered"
+    assert discord.dms[-1][0] == "target"
+    assert "requester" not in discord.dms[-1][1]
 
 
 async def test_nudge_rejects_self_bots_forged_ids_and_limit(
@@ -656,3 +699,108 @@ async def test_custom_template_delete_confirmation_revalidates_admin(
     }
     await processor.process(payload)
     assert await repository.get_template("guild", template.id) is None
+
+
+async def test_workspace_launcher_is_private_one_time_and_contextual(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+) -> None:
+    processor, repository, _, discord = system
+    payload = {
+        "id": "open",
+        "type": 2,
+        "token": "token",
+        "guild_id": "guild",
+        "member": {"user": {"id": "user"}},
+        "data": {"name": "proposal"},
+    }
+    await processor.process(payload)
+    components = discord.response_components[-1]
+    assert components
+    url = str(components[0]["components"][0]["url"])  # type: ignore[index]
+    assert url.startswith("https://workspace.example/launch?code=")
+    code = url.split("code=", 1)[1]
+    first = await processor.exchange_workspace_launch(code)
+    assert first == {
+        "user_id": "user",
+        "guild_id": "guild",
+        "proposal_id": None,
+        "display_name": "Discord member",
+    }
+    assert await processor.exchange_workspace_launch(code) is None
+    assert next(iter(repository.workspace_launches.values())).consumed_at
+
+
+async def test_workspace_jobs_reuse_durable_proposal_and_preference_logic(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+) -> None:
+    processor, repository, tasks, discord = system
+    create = {
+        "id": "web-create",
+        "action": "create",
+        "actor_user_id": "user",
+        "guild_id": "guild",
+        "data": {
+            "title": "Quiet hours",
+            "context": "No late pings",
+            "type_id": "builtin:general",
+        },
+    }
+    await processor.process_workspace(create)
+    job = repository.workspace_jobs["web-create"]
+    assert job.status == "succeeded"
+    assert job.proposal_id
+    assert repository.proposals[job.proposal_id].title == "Quiet hours"
+    assert tasks.deadlines
+    assert discord.announcements
+
+    await processor.process_workspace(
+        {
+            "id": "web-preferences",
+            "action": "preferences",
+            "actor_user_id": "user",
+            "guild_id": "guild",
+            "data": {"new_proposals": True, "nudges": False},
+        }
+    )
+    assert repository.workspace_jobs["web-preferences"].status == "succeeded"
+    assert await repository.get_guild_subscription("guild", "user")
+    assert not await repository.get_nudges_enabled("guild", "user")
+
+
+async def test_workspace_admin_jobs_validate_permission_and_types(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+) -> None:
+    processor, repository, _, _ = system
+    denied = {
+        "id": "denied",
+        "action": "configure",
+        "actor_user_id": "user",
+        "guild_id": "guild",
+        "data": {"channel_id": "channel", "duration_minutes": 5},
+    }
+    await processor.process_workspace(denied)
+    assert repository.workspace_jobs["denied"].status == "failed"
+    assert "Manage Server" in repository.workspace_jobs["denied"].message
+
+    save_type = {
+        "id": "type",
+        "action": "type_save",
+        "actor_user_id": "admin",
+        "guild_id": "guild",
+        "data": {"name": "Policy", "description": "Policy changes"},
+    }
+    await processor.process_workspace(save_type)
+    assert repository.workspace_jobs["type"].status == "succeeded"
+    custom = next(iter(repository.templates.values()))
+
+    await processor.process_workspace(
+        {
+            "id": "delete-type",
+            "action": "type_delete",
+            "actor_user_id": "admin",
+            "guild_id": "guild",
+            "data": {"type_id": custom.id},
+        }
+    )
+    assert repository.workspace_jobs["delete-type"].status == "succeeded"
+    assert not repository.templates

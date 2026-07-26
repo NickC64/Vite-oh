@@ -1,20 +1,23 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from google.cloud import firestore
 
 from viteoh.config import Settings, get_settings
-from viteoh.discord_api import DiscordClient
+from viteoh.discord_api import DiscordAPIError, DiscordClient
 from viteoh.receiver import InteractionReceiver
 from viteoh.repository import FirestoreRepository
 from viteoh.security import SignatureVerifier
 from viteoh.tasks import TaskDispatcher
 from viteoh.worker import InteractionProcessor
+from viteoh.workspace import WEB_ROOT, Workspace
+from viteoh.workspace_client import WorkspaceWorkerClient
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,13 +30,30 @@ def create_app(
     *,
     receiver: InteractionReceiver | None = None,
     processor: InteractionProcessor | None = None,
+    workspace: Workspace | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
     resources: dict[str, Any] = {}
+    if settings.service_role == "web" and workspace is None:
+        if not settings.google_cloud_project:
+            raise RuntimeError("The web service requires GOOGLE_CLOUD_PROJECT.")
+        web_repository = FirestoreRepository(
+            firestore.AsyncClient(
+                project=settings.google_cloud_project,
+                database=settings.firestore_database,
+            )
+        )
+        workspace = Workspace(
+            settings,
+            web_repository,
+            TaskDispatcher(settings),
+            WorkspaceWorkerClient(settings),
+        )
+        resources["workspace"] = workspace
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        if receiver is None and processor is None:
+        if receiver is None and processor is None and workspace is None:
             tasks = TaskDispatcher(settings)
             if settings.service_role == "receiver":
                 repository = None
@@ -68,6 +88,8 @@ def create_app(
         yield
         if "discord" in resources:
             await resources["discord"].close()
+        if "workspace" in resources:
+            await resources["workspace"].close()
 
     application = FastAPI(
         title="Vite-oh",
@@ -93,7 +115,7 @@ def create_app(
             )
             return JSONResponse(payload, status_code=status)
 
-    else:
+    elif settings.service_role == "worker":
 
         @application.post("/tasks/interactions", status_code=204)
         async def process_interaction(request: Request) -> Response:
@@ -110,6 +132,90 @@ def create_app(
         async def reconcile() -> dict[str, int]:
             active_processor = processor or resources["processor"]
             return await active_processor.reconcile()
+
+        @application.post("/tasks/workspace", status_code=204)
+        async def process_workspace(request: Request) -> Response:
+            active_processor = processor or resources["processor"]
+            await active_processor.process_workspace(await request.json())
+            return Response(status_code=204)
+
+        @application.post("/internal/workspace/exchange")
+        async def exchange_workspace(request: Request) -> JSONResponse:
+            active_processor = processor or resources["processor"]
+            body = await request.json()
+            result = await active_processor.exchange_workspace_launch(
+                str(body.get("code", ""))
+            )
+            if not result:
+                return JSONResponse(
+                    {"detail": "This workspace link is invalid, expired, or used."},
+                    status_code=401,
+                )
+            return JSONResponse(result)
+
+        @application.post("/internal/workspace/access")
+        async def workspace_access(request: Request) -> JSONResponse:
+            active_processor = processor or resources["processor"]
+            body = await request.json()
+            try:
+                result = await active_processor.workspace_access(
+                    str(body.get("guild_id", "")),
+                    str(body.get("user_id", "")),
+                )
+            except DiscordAPIError as exc:
+                logging.getLogger(__name__).exception(
+                    "Could not authorize workspace member"
+                )
+                if exc.retryable:
+                    return JSONResponse(
+                        {
+                            "detail": (
+                                "Discord is temporarily unavailable. "
+                                "Please try again shortly."
+                            )
+                        },
+                        status_code=503,
+                    )
+                return JSONResponse(
+                    {"detail": "You are not authorized for this server."},
+                    status_code=403,
+                )
+            return JSONResponse(result)
+    else:
+        assert workspace is not None
+        application.include_router(workspace.router)
+
+        application.mount(
+            "/static",
+            StaticFiles(directory=WEB_ROOT / "static"),
+            name="static",
+        )
+
+        @application.middleware("http")
+        async def workspace_security_headers(
+            request: Request, call_next: Any
+        ) -> Response:
+            response = cast(Response, await call_next(request))
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; img-src 'self' data:; "
+                "style-src 'self'; script-src 'self'; "
+                "connect-src 'self'; frame-ancestors 'none'; form-action 'self'"
+            )
+            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["Strict-Transport-Security"] = (
+                "max-age=31536000; includeSubDomains"
+            )
+            response.headers["Cache-Control"] = (
+                "public, max-age=86400, immutable"
+                if request.url.path.startswith("/static/")
+                else "no-store"
+            )
+            response.headers["Permissions-Policy"] = (
+                "camera=(), microphone=(), geolocation=()"
+            )
+            return response
 
     return application
 

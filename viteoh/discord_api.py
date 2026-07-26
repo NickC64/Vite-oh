@@ -12,6 +12,7 @@ from viteoh.domain import Proposal, ProposalStatus
 logger = logging.getLogger(__name__)
 
 ADMINISTRATOR = 1 << 3
+MANAGE_GUILD = 1 << 5
 VIEW_CHANNEL = 1 << 10
 SEND_MESSAGES = 1 << 11
 EMBED_LINKS = 1 << 14
@@ -70,7 +71,12 @@ class DiscordClient:
         raise AssertionError("request retry loop exhausted")
 
     async def edit_interaction_response(
-        self, token: str, content: str, *, clear_components: bool = False
+        self,
+        token: str,
+        content: str,
+        *,
+        clear_components: bool = False,
+        components: list[dict[str, object]] | None = None,
     ) -> None:
         await self._request(
             "PATCH",
@@ -78,7 +84,13 @@ class DiscordClient:
             json={
                 "content": content,
                 "allowed_mentions": {"parse": []},
-                **({"components": []} if clear_components else {}),
+                **(
+                    {"components": []}
+                    if clear_components
+                    else {"components": components}
+                    if components is not None
+                    else {}
+                ),
             },
         )
 
@@ -101,10 +113,8 @@ class DiscordClient:
 
     async def sync_proposal_announcement(self, proposal: Proposal) -> str:
         embed = _proposal_embed(proposal)
-        components = (
-            proposal_buttons(proposal.id)
-            if proposal.status is ProposalStatus.ACTIVE
-            else []
+        components = proposal_buttons(
+            proposal.id, active=proposal.status is ProposalStatus.ACTIVE
         )
         if proposal.message_id:
             try:
@@ -148,6 +158,7 @@ class DiscordClient:
             f"/channels/{proposal.output_channel_id}/messages",
             json={
                 "embeds": [_outcome_embed(proposal)],
+                "components": proposal_buttons(proposal.id, active=False),
                 "message_reference": {
                     "message_id": proposal.message_id,
                     "channel_id": proposal.output_channel_id,
@@ -216,6 +227,89 @@ class DiscordClient:
         if not isinstance(result, dict):
             raise DiscordAPIError(502, "Discord did not return the guild member.")
         return result
+
+    async def get_workspace_access(self, guild_id: str, user_id: str) -> dict[str, Any]:
+        guild = await self._request("GET", f"/guilds/{guild_id}")
+        member = await self.get_guild_member(guild_id, user_id)
+        roles = await self._request("GET", f"/guilds/{guild_id}/roles")
+        channels = await self._request("GET", f"/guilds/{guild_id}/channels")
+        bot_user = await self._request("GET", "/users/@me")
+        bot_id = str((bot_user or {}).get("id", ""))
+        bot_member = await self.get_guild_member(guild_id, bot_id)
+        if (
+            not isinstance(guild, dict)
+            or not isinstance(roles, list)
+            or not isinstance(channels, list)
+        ):
+            raise DiscordAPIError(502, "Discord did not return guild access data.")
+
+        member_roles = {str(role_id) for role_id in member.get("roles", [])}
+        bot_roles = {str(role_id) for role_id in bot_member.get("roles", [])}
+        member_base = _base_permissions(guild_id, member, roles)
+        bot_base = _base_permissions(guild_id, bot_member, roles)
+        if str(guild.get("owner_id", "")) == user_id:
+            member_base = (1 << 53) - 1
+
+        visible_channel_ids: list[str] = []
+        output_channels: list[dict[str, Any]] = []
+        for channel in channels:
+            if not isinstance(channel, dict):
+                continue
+            channel_id = str(channel.get("id", ""))
+            overwrites = channel.get("permission_overwrites") or []
+            member_permissions = _channel_permissions(
+                member_base,
+                guild_id,
+                user_id,
+                member_roles,
+                overwrites,
+            )
+            if member_permissions & VIEW_CHANNEL:
+                visible_channel_ids.append(channel_id)
+            if (
+                int(channel.get("type", -1)) in SUPPORTED_OUTPUT_CHANNEL_TYPES
+                and member_permissions & VIEW_CHANNEL
+            ):
+                bot_permissions = _channel_permissions(
+                    bot_base,
+                    guild_id,
+                    bot_id,
+                    bot_roles,
+                    overwrites,
+                )
+                output_channels.append(
+                    {
+                        "id": channel_id,
+                        "name": str(channel.get("name") or channel_id),
+                        "bot_ready": (
+                            REQUIRED_OUTPUT_PERMISSIONS & ~bot_permissions == 0
+                        ),
+                    }
+                )
+        return {
+            "guild_id": guild_id,
+            "guild_name": str(guild.get("name") or guild_id),
+            "display_name": str(
+                member.get("nick")
+                or (
+                    (member.get("user") or {}).get("global_name")
+                    if isinstance(member.get("user"), dict)
+                    else ""
+                )
+                or (
+                    (member.get("user") or {}).get("username")
+                    if isinstance(member.get("user"), dict)
+                    else ""
+                )
+                or "Discord member"
+            ),
+            "is_member": True,
+            "can_manage": bool(member_base & (ADMINISTRATOR | MANAGE_GUILD)),
+            "visible_channel_ids": visible_channel_ids,
+            "output_channels": sorted(
+                output_channels, key=lambda item: str(item["name"]).casefold()
+            ),
+        }
 
     async def send_dm(self, user_id: str, content: str, *, event_key: str) -> None:
         channel = await self._request(
@@ -338,6 +432,8 @@ def _channel_permissions(
     member_roles: set[str],
     overwrites: list[dict[str, Any]],
 ) -> int:
+    if permissions & ADMINISTRATOR:
+        return (1 << 53) - 1
     everyone = next(
         (
             overwrite

@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="proposal-detail">
+  <span class="eyebrow">{{ proposal.template_name }} proposal</span>
+  <h1>{{ proposal.title }}</h1>
+  {% if proposal.context %}<div class="context markdown">{{ proposal.context|safe_markdown }}</div>{% endif %}
+  <div class="detail-grid">
+    <div><span>Status</span><strong class="status {{ proposal.status.value }}">{{ proposal.status.value }}</strong></div>
+    <div><span>Deadline</span><strong>{{ proposal.deadline_at.strftime("%b %-d, %Y at %-I:%M %p UTC") }}</strong></div>
+    <div><span>Acknowledged</span><strong>{{ proposal.acknowledgement_count }} members</strong></div>
+  </div>
+  {% if proposal.veto_reason %}
+  <section class="reason"><h2>Anonymous veto reason</h2><div class="markdown">{{ proposal.veto_reason|safe_markdown }}</div></section>
+  {% endif %}
+  <div class="actions">
+    <a class="button primary" href="{{ discord_url }}" rel="noreferrer">Open in Discord</a>
+    {% if can_manage and proposal.status.value == "active" %}
+    <form method="post" action="/app/proposals/{{ proposal.id }}/delete" onsubmit="return confirm('Delete this proposal? This cannot be undone.')">
+      <input type="hidden" name="csrf" value="{{ session.csrf }}">
+      <input type="hidden" name="guild_id" value="{{ guild_id }}">
+      <button class="danger" type="submit">Delete proposal</button>
+    </form>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-heading">
+  <div>
+    <span class="eyebrow">{{ guild_name }}</span>
+    <h1>Proposals</h1>
+    <p>Every proposal passes at its deadline unless a member vetoes it.</p>
+  </div>
+  {% if config %}
+  <a class="button primary" href="/app/proposals/new?guild={{ guild_id }}">Create proposal</a>
+  {% elif can_manage %}
+  <a class="button primary" href="/app/settings?guild={{ guild_id }}">Set up this server</a>
+  {% endif %}
+</section>
+
+{% if not config %}
+<section class="panel empty">
+  <h2>This server is not configured yet</h2>
+  <p>A member with Manage Server permission can choose a proposal channel and duration.</p>
+</section>
+{% else %}
+<section>
+  <h2>Active</h2>
+  <div class="card-grid">
+    {% for proposal in active %}
+    <a class="proposal-card active" href="/app/proposals/{{ proposal.id }}?guild={{ guild_id }}">
+      <span class="type">{{ proposal.template_name }} proposal</span>
+      <strong>{{ proposal.title }}</strong>
+      <span>Passes <time data-relative="{{ proposal.deadline_at.isoformat() }}">{{ proposal.deadline_at.strftime("%b %-d at %-I:%M %p") }}</time></span>
+      <span>{{ proposal.acknowledgement_count }} acknowledged</span>
+    </a>
+    {% else %}
+    <div class="panel empty"><p>No active proposals. This is a suspiciously peaceful moment.</p></div>
+    {% endfor %}
+  </div>
+</section>
+
+<section>
+  <h2>History</h2>
+  <div class="history-list">
+    {% for proposal in history %}
+    <a href="/app/proposals/{{ proposal.id }}?guild={{ guild_id }}">
+      <span class="status {{ proposal.status.value }}">{{ proposal.status.value }}</span>
+      <strong>{{ proposal.title }}</strong>
+      <span>{{ proposal.template_name }}</span>
+      <time>{{ proposal.created_at.strftime("%Y-%m-%d") }}</time>
+    </a>
+    {% else %}
+    <div class="panel empty"><p>Resolved proposals will collect here.</p></div>
+    {% endfor %}
+  </div>
+  {% if next_before %}
+  <div class="pagination">
+    <a class="button" href="/app?guild={{ guild_id }}&before={{ next_before }}">Older proposals</a>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

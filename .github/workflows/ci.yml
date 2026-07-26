@@ -68,3 +68,25 @@ jobs:
           done
           docker logs viteoh-test
           exit 1
+      - name: Smoke-test web health and security headers
+        run: |
+          docker run --detach --name viteoh-web-test \
+            --publish 8081:8080 \
+            --env SERVICE_ROLE=web \
+            --env GOOGLE_CLOUD_PROJECT=test \
+            --env FIRESTORE_EMULATOR_HOST=127.0.0.1:8085 \
+            --env WORKSPACE_SIGNING_SECRET=test-only-signing-secret \
+            --env WORKER_URL=http://127.0.0.1:8082 \
+            --env WORKSPACE_URL=http://127.0.0.1:8081 \
+            viteoh:test
+          for attempt in {1..20}; do
+            if curl --fail --silent \
+              --dump-header /tmp/viteoh-web-headers \
+              http://127.0.0.1:8081/health; then
+              grep --ignore-case "x-frame-options: DENY" /tmp/viteoh-web-headers
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs viteoh-web-test
+          exit 1

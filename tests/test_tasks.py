@@ -49,6 +49,10 @@ async def test_task_dispatch_and_deadline_deduplicate() -> None:
     )
     interaction_name = await dispatcher.enqueue_interaction({"id": "42"})
     assert interaction_name.endswith("interaction-42")
+    workspace_name = await dispatcher.enqueue_workspace(
+        {"id": "job", "action": "create"}
+    )
+    assert workspace_name.endswith("workspace-job")
     deadline_name = await dispatcher.ensure_deadline(
         "12345678-1234-1234-1234-123456789abc",
         utcnow() + timedelta(hours=1),
@@ -58,6 +62,10 @@ async def test_task_dispatch_and_deadline_deduplicate() -> None:
 
     fake.raise_exists = True
     assert await dispatcher.enqueue_interaction({"id": "42"}) == interaction_name
+    assert (
+        await dispatcher.enqueue_workspace({"id": "job", "action": "create"})
+        == workspace_name
+    )
     fake.raise_not_found = True
     assert not await dispatcher.exists(deadline_name)
     await dispatcher.delete(deadline_name)

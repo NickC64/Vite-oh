@@ -3,7 +3,8 @@ from typing import Any
 
 _COMPONENT_RE = re.compile(
     r"^(?P<scope>proposal|template):"
-    r"(?P<action>veto|confirm-veto|subscribe|acknowledge|confirm-delete|cancel-delete):"
+    r"(?P<action>veto|confirm-veto|subscribe|acknowledge|nudge|nudge-select|"
+    r"workspace|confirm-delete|cancel-delete):"
     r"(?P<resource_id>[0-9a-f-]{36})$"
 )
 
@@ -30,12 +31,47 @@ def button(label: str, style: int, custom_id: str) -> dict[str, object]:
     return {"type": 2, "label": label, "style": style, "custom_id": custom_id}
 
 
-def proposal_buttons(proposal_id: str) -> list[dict[str, object]]:
-    return action_row(
-        button("Veto", 4, component_id("proposal", "veto", proposal_id)),
-        button("Acknowledge", 2, component_id("proposal", "acknowledge", proposal_id)),
-        button("Subscribe", 1, component_id("proposal", "subscribe", proposal_id)),
+def proposal_buttons(
+    proposal_id: str, *, active: bool = True
+) -> list[dict[str, object]]:
+    workspace = action_row(
+        button(
+            "Open workspace",
+            2,
+            component_id("proposal", "workspace", proposal_id),
+        )
     )
+    if not active:
+        return workspace
+    return [
+        *action_row(
+            button("Veto", 4, component_id("proposal", "veto", proposal_id)),
+            button(
+                "Acknowledge",
+                2,
+                component_id("proposal", "acknowledge", proposal_id),
+            ),
+            button("Subscribe", 1, component_id("proposal", "subscribe", proposal_id)),
+            button("Nudge", 2, component_id("proposal", "nudge", proposal_id)),
+        ),
+        *workspace,
+    ]
+
+
+def user_select(custom_id: str, placeholder: str) -> list[dict[str, object]]:
+    return action_row(
+        {
+            "type": 5,
+            "custom_id": custom_id,
+            "placeholder": placeholder,
+            "min_values": 1,
+            "max_values": 1,
+        }
+    )
+
+
+def link_button(label: str, url: str) -> list[dict[str, object]]:
+    return action_row({"type": 2, "label": label, "style": 5, "url": url})
 
 
 def delete_confirmation_buttons(

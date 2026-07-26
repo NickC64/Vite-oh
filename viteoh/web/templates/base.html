@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>{{ title }} · Vite-oh</title>
+  <link rel="stylesheet" href="/static/workspace.css">
+  <script src="/static/htmx.min.js" defer></script>
+  <script src="/static/workspace.js" type="module"></script>
+</head>
+<body>
+  {% if session %}
+  <header class="topbar">
+    <a class="brand" href="/app?guild={{ guild_id }}">Vite-oh</a>
+    <nav aria-label="Workspace">
+      <a href="/app?guild={{ guild_id }}">Proposals</a>
+      <a href="/app/proposals/new?guild={{ guild_id }}">Create</a>
+      <a href="/app/preferences?guild={{ guild_id }}">Preferences</a>
+      {% if can_manage %}
+      <a href="/app/settings?guild={{ guild_id }}">Settings</a>
+      <a href="/app/types?guild={{ guild_id }}">Types</a>
+      {% endif %}
+    </nav>
+    <form method="post" action="/logout">
+      <input type="hidden" name="csrf" value="{{ session.csrf }}">
+      <button class="quiet" type="submit">Sign out</button>
+    </form>
+  </header>
+  {% endif %}
+  <main class="shell">
+    {% if session and guilds %}
+    <form class="guild-switcher" method="get" action="/app">
+      <label for="guild">Server</label>
+      <select id="guild" name="guild" onchange="this.form.submit()">
+        {% for item in guilds %}
+        <option value="{{ item.guild_id }}" {% if item.guild_id == guild_id %}selected{% endif %}>{{ item.guild_name }}</option>
+        {% endfor %}
+      </select>
+    </form>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

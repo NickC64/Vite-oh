@@ -32,6 +32,21 @@ class StubProcessor:
             "effects_retried": 0,
         }
 
+    async def process_workspace(self, payload: dict[str, Any]) -> None:
+        self.payloads.append(payload)
+
+    async def exchange_workspace_launch(self, code: str) -> dict[str, str] | None:
+        if code == "good":
+            return {"user_id": "user", "guild_id": "guild"}
+        return None
+
+    async def workspace_access(self, guild_id: str, user_id: str) -> dict[str, object]:
+        return {
+            "guild_id": guild_id,
+            "user_id": user_id,
+            "is_member": True,
+        }
+
 
 def test_receiver_app_routes() -> None:
     app = create_app(
@@ -60,4 +75,21 @@ def test_worker_app_routes() -> None:
             "result": "finalized:p1"
         }
         assert client.post("/tasks/reconcile").json()["active"] == 0
+        assert client.post("/tasks/workspace", json={"id": "job"}).status_code == 204
+        assert (
+            client.post("/internal/workspace/exchange", json={"code": "good"}).json()[
+                "user_id"
+            ]
+            == "user"
+        )
+        assert (
+            client.post(
+                "/internal/workspace/exchange", json={"code": "bad"}
+            ).status_code
+            == 401
+        )
+        assert client.post(
+            "/internal/workspace/access",
+            json={"guild_id": "guild", "user_id": "user"},
+        ).json()["is_member"]
         assert client.post("/interactions").status_code == 404

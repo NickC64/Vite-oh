@@ -96,6 +96,7 @@ class Proposal:
     acknowledgement_count: int = 0
     nudge_count: int = 0
     announcement_version: int = 0
+    render_version: int = 0
     template_id: str = "builtin:general"
     template_name: str = "General"
     veto_reason: str = ""
@@ -126,6 +127,7 @@ class Proposal:
             acknowledgement_count=int(data.get("acknowledgement_count", 0)),
             nudge_count=int(data.get("nudge_count", 0)),
             announcement_version=int(data.get("announcement_version", 0)),
+            render_version=int(data.get("render_version", 0)),
             template_id=data.get("template_id", "builtin:general"),
             template_name=data.get("template_name", "General"),
             veto_reason=data.get("veto_reason", ""),
@@ -158,6 +160,58 @@ class TemplateMutationResult:
     template: ProposalTemplate | None
     changed: bool
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceJob:
+    id: str
+    guild_id: str
+    requester_hash: str
+    action: str
+    status: str
+    message: str
+    proposal_id: str | None
+    created_at: datetime
+    updated_at: datetime
+    expires_at: datetime
+
+    @classmethod
+    def from_document(cls, document_id: str, data: dict[str, Any]) -> "WorkspaceJob":
+        return cls(
+            id=document_id,
+            guild_id=str(data["guild_id"]),
+            requester_hash=str(data["requester_hash"]),
+            action=str(data["action"]),
+            status=str(data["status"]),
+            message=str(data.get("message", "")),
+            proposal_id=(str(data["proposal_id"]) if data.get("proposal_id") else None),
+            created_at=_utc(data["created_at"]),
+            updated_at=_utc(data["updated_at"]),
+            expires_at=_utc(data["expires_at"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceLaunch:
+    user_id: str
+    guild_id: str
+    proposal_id: str | None
+    created_at: datetime
+    expires_at: datetime
+    consumed_at: datetime | None = None
+
+    @classmethod
+    def from_document(cls, data: dict[str, Any]) -> "WorkspaceLaunch":
+        return cls(
+            user_id=str(data["user_id"]),
+            guild_id=str(data["guild_id"]),
+            proposal_id=(str(data["proposal_id"]) if data.get("proposal_id") else None),
+            created_at=_utc(data["created_at"]),
+            expires_at=_utc(data["expires_at"]),
+            consumed_at=(
+                _utc(data["consumed_at"]) if data.get("consumed_at") else None
+            ),
+        )
 
 
 def utcnow() -> datetime:

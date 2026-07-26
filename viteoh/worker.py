@@ -1,10 +1,14 @@
+import hashlib
 import logging
+import secrets
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
+from urllib.parse import urlencode
 from uuid import UUID
 
 from viteoh.commands import HELP_TEXT, command_path_and_options
-from viteoh.components import modal_values, parse_component_id
+from viteoh.components import link_button, modal_values, parse_component_id
 from viteoh.config import Settings
 from viteoh.discord_api import DiscordAPIError, DiscordClient
 from viteoh.domain import (
@@ -17,13 +21,21 @@ from viteoh.domain import (
 from viteoh.repository import Repository, normalize_title
 from viteoh.tasks import TaskDispatcher
 from viteoh.templates import validate_template_fields
+from viteoh.workspace_security import SignedTokenCodec
 
 logger = logging.getLogger(__name__)
+CURRENT_RENDER_VERSION = 1
 
 ADMINISTRATOR = 1 << 3
 MANAGE_GUILD = 1 << 5
 MIN_DURATION_MINUTES = 1
 MAX_DURATION_MINUTES = 10080
+
+
+@dataclass(frozen=True, slots=True)
+class InteractionReply:
+    content: str
+    components: list[dict[str, object]] | None = None
 
 
 class InteractionProcessor:
@@ -38,6 +50,7 @@ class InteractionProcessor:
         self.repository = repository
         self.tasks = tasks
         self.discord = discord
+        self.workspace_codec = SignedTokenCodec(settings.workspace_signing_secret)
 
     async def process(self, payload: dict[str, Any]) -> None:
         interaction_type = int(payload.get("type", 0))
@@ -46,13 +59,18 @@ class InteractionProcessor:
         guild_id = str(payload.get("guild_id", ""))
         try:
             if interaction_type == 2:
-                content = await self._command(payload, guild_id, user_id)
+                result = await self._command(payload, guild_id, user_id)
             elif interaction_type == 3:
-                content = await self._component(payload, guild_id, user_id)
+                result = await self._component(payload, guild_id, user_id)
             elif interaction_type == 5:
-                content = await self._modal(payload, guild_id, user_id)
+                result = await self._modal(payload, guild_id, user_id)
             else:
-                content = "Unsupported interaction."
+                result = "Unsupported interaction."
+            reply = (
+                result
+                if isinstance(result, InteractionReply)
+                else InteractionReply(result)
+            )
             parsed_component = (
                 parse_component_id(
                     str((payload.get("data") or {}).get("custom_id", ""))
@@ -62,10 +80,11 @@ class InteractionProcessor:
             )
             await self.discord.edit_interaction_response(
                 token,
-                content,
+                reply.content,
                 clear_components=bool(
                     parsed_component and parsed_component[1] == "confirm-delete"
                 ),
+                components=reply.components,
             )
         except DiscordAPIError as exc:
             if exc.retryable:
@@ -80,8 +99,10 @@ class InteractionProcessor:
 
     async def _command(
         self, payload: dict[str, Any], guild_id: str, user_id: str
-    ) -> str:
+    ) -> str | InteractionReply:
         path, options = command_path_and_options(payload.get("data") or {})
+        if path == ("proposal",):
+            return await self._workspace_reply(user_id, guild_id)
         if path == ("proposal", "configure"):
             return await self._setup(payload, guild_id, user_id, options)
         if path == ("proposal", "help"):
@@ -335,6 +356,10 @@ class InteractionProcessor:
                 await self.repository.set_message_id(proposal.id, message_id)
                 or proposal
             )
+            proposal = (
+                await self.repository.mark_rendered(proposal.id, CURRENT_RENDER_VERSION)
+                or proposal
+            )
         await self._notify_created(proposal)
         return (
             f"Proposal created successfully. It will pass "
@@ -413,13 +438,20 @@ class InteractionProcessor:
 
     async def _component(
         self, payload: dict[str, Any], guild_id: str, user_id: str
-    ) -> str:
+    ) -> str | InteractionReply:
         parsed = parse_component_id(
             str((payload.get("data") or {}).get("custom_id", ""))
         )
         if not parsed:
             return "This control is no longer valid."
         scope, action, resource_id = parsed
+        if scope == "proposal" and action == "workspace":
+            proposal = await self.repository.get_proposal(resource_id)
+            if not proposal or proposal.guild_id != guild_id:
+                return "This control belongs to a proposal in another server."
+            return await self._workspace_reply(
+                user_id, guild_id, proposal_id=proposal.id
+            )
         if action == "confirm-delete":
             if not self._is_admin(payload, user_id):
                 return "You need Manage Server permission to delete this."
@@ -442,6 +474,12 @@ class InteractionProcessor:
             return "This proposal is no longer active."
         if proposal.guild_id != guild_id:
             return "This control belongs to a proposal in another server."
+        if action == "nudge-select":
+            values = (payload.get("data") or {}).get("values") or []
+            target_user_id = str(values[0]) if values else ""
+            if not target_user_id:
+                return "Choose a server member to nudge."
+            return await self._nudge(guild_id, user_id, proposal_id, target_user_id)
         if action == "subscribe":
             added = await self.repository.add_proposal_subscription(
                 proposal_id, user_id
@@ -467,6 +505,231 @@ class InteractionProcessor:
         if action == "confirm-veto":
             return await self._veto(proposal, "")
         return "This control is no longer valid."
+
+    async def _workspace_reply(
+        self,
+        user_id: str,
+        guild_id: str,
+        *,
+        proposal_id: str | None = None,
+    ) -> InteractionReply:
+        code = secrets.token_urlsafe(32)
+        code_hash = hashlib.sha256(code.encode()).hexdigest()
+        await self.repository.create_workspace_launch(
+            code_hash,
+            user_id,
+            guild_id,
+            proposal_id,
+            utcnow(),
+            self.settings.workspace_launch_ttl_seconds,
+        )
+        url = f"{self.settings.workspace_url}/launch?{urlencode({'code': code})}"
+        return InteractionReply(
+            "Your private workspace link expires in five minutes and can be used once.",
+            link_button("Open workspace", url),
+        )
+
+    async def exchange_workspace_launch(self, code: str) -> dict[str, Any] | None:
+        code_hash = hashlib.sha256(code.encode()).hexdigest()
+        launch = await self.repository.consume_workspace_launch(code_hash, utcnow())
+        if not launch:
+            return None
+        return {
+            "user_id": launch.user_id,
+            "guild_id": launch.guild_id,
+            "proposal_id": launch.proposal_id,
+            "display_name": "Discord member",
+        }
+
+    async def workspace_access(self, guild_id: str, user_id: str) -> dict[str, Any]:
+        access = await self.discord.get_workspace_access(guild_id, user_id)
+        access["can_manage"] = bool(
+            access.get("can_manage")
+            or (
+                self.settings.discord_owner_user_id
+                and user_id == self.settings.discord_owner_user_id
+            )
+        )
+        return access
+
+    async def process_workspace(self, payload: dict[str, Any]) -> None:
+        job_id = str(payload.get("id", ""))
+        guild_id = str(payload.get("guild_id", ""))
+        user_id = str(payload.get("actor_user_id", ""))
+        action = str(payload.get("action", ""))
+        data = payload.get("data") or {}
+        requester_hash = self.workspace_codec.fingerprint(user_id)
+        existing_job = await self.repository.get_workspace_job(job_id)
+        if existing_job and existing_job.status in {"succeeded", "failed"}:
+            return
+        now = utcnow()
+        await self.repository.set_workspace_job(
+            job_id,
+            guild_id,
+            requester_hash,
+            action,
+            "processing",
+            "",
+            None,
+            now,
+            self.settings.workspace_job_ttl_seconds,
+        )
+        proposal_id: str | None = None
+        try:
+            access = await self.workspace_access(guild_id, user_id)
+            message, proposal_id = await self._workspace_action(
+                job_id,
+                action,
+                data,
+                guild_id,
+                user_id,
+                access,
+            )
+            status = "succeeded"
+        except DiscordAPIError as exc:
+            if exc.retryable:
+                raise
+            status = "failed"
+            message = "Discord no longer permits that action."
+        except (ValueError, PermissionError) as exc:
+            status = "failed"
+            message = str(exc)
+        await self.repository.set_workspace_job(
+            job_id,
+            guild_id,
+            requester_hash,
+            action,
+            status,
+            message,
+            proposal_id,
+            utcnow(),
+            self.settings.workspace_job_ttl_seconds,
+        )
+
+    async def _workspace_action(
+        self,
+        job_id: str,
+        action: str,
+        data: dict[str, Any],
+        guild_id: str,
+        user_id: str,
+        access: dict[str, Any],
+    ) -> tuple[str, str | None]:
+        config = await self.repository.get_guild_config(guild_id)
+        is_admin = bool(access.get("can_manage"))
+        visible_channels = {
+            str(item) for item in access.get("visible_channel_ids") or []
+        }
+        if action == "create":
+            if not config:
+                raise ValueError("This server must be configured first.")
+            if config.output_channel_id not in visible_channels:
+                raise PermissionError("You cannot view this server's proposal channel.")
+            template = await self.repository.get_template(
+                guild_id, str(data.get("type_id") or "builtin:general")
+            )
+            if not template:
+                raise ValueError("That proposal type no longer exists.")
+            message = await self._new(
+                f"web:{job_id}",
+                str(data.get("title", "")),
+                str(data.get("context", "")),
+                template,
+                config,
+            )
+            proposal = await self.repository.get_proposal_for_interaction(
+                f"web:{job_id}"
+            )
+            if not proposal or proposal.status is not ProposalStatus.ACTIVE:
+                raise ValueError(message)
+            return message, proposal.id
+        if action == "preferences":
+            await self.repository.set_guild_subscription(
+                guild_id, user_id, bool(data.get("new_proposals"))
+            )
+            await self.repository.set_nudges_enabled(
+                guild_id, user_id, bool(data.get("nudges"))
+            )
+            return "Your preferences were saved.", None
+        if not is_admin:
+            raise PermissionError("You need Manage Server permission.")
+        if action == "configure":
+            channel_id = str(data.get("channel_id", ""))
+            duration_minutes = int(data.get("duration_minutes", 0))
+            if not MIN_DURATION_MINUTES <= duration_minutes <= MAX_DURATION_MINUTES:
+                raise ValueError("Duration must be between 1 and 10,080 minutes.")
+            ready_channels = {
+                str(channel["id"])
+                for channel in access.get("output_channels") or []
+                if channel.get("bot_ready")
+            }
+            if channel_id not in ready_channels:
+                raise PermissionError(
+                    "Choose a visible text channel where the bot can post."
+                )
+            guild_name = await self.discord.validate_output_channel(
+                guild_id, channel_id
+            )
+            await self.repository.set_guild_config(
+                guild_id,
+                guild_name,
+                channel_id,
+                duration_minutes * 60,
+                user_id,
+                utcnow(),
+            )
+            return "Server settings were saved.", None
+        if action == "delete":
+            proposal_id = str(data.get("proposal_id", ""))
+            proposal = await self.repository.get_proposal(proposal_id)
+            if not proposal or proposal.guild_id != guild_id:
+                raise ValueError("That proposal no longer exists.")
+            if proposal.output_channel_id not in visible_channels:
+                raise PermissionError("You cannot view that proposal's channel.")
+            return await self._delete(guild_id, proposal_id), proposal_id
+        if action == "type_save":
+            submitted_type_id = str(data.get("type_id") or "") or None
+            if submitted_type_id:
+                existing = await self.repository.get_template(
+                    guild_id, submitted_type_id
+                )
+                if not existing or existing.builtin:
+                    raise ValueError("That custom proposal type no longer exists.")
+            type_id = submitted_type_id or job_id
+            name, normalized_name, description = validate_template_fields(
+                str(data.get("name", "")),
+                str(data.get("description", "")),
+            )
+            result = await self.repository.save_template(
+                guild_id,
+                type_id,
+                name,
+                normalized_name,
+                description,
+                "Proposal title",
+                "Context",
+                "{subject}",
+                False,
+                user_id,
+                utcnow(),
+            )
+            if not result.changed or not result.template:
+                reason = {
+                    "duplicate_name": "A proposal type with that name exists.",
+                    "limit": "This server already has 20 custom proposal types.",
+                }.get(result.reason, "The proposal type could not be saved.")
+                raise ValueError(reason)
+            return f"Proposal type “{result.template.name}” was saved.", None
+        if action == "type_delete":
+            type_id = str(data.get("type_id", ""))
+            existing = await self.repository.get_template(guild_id, type_id)
+            if not existing or existing.builtin:
+                raise ValueError("That custom proposal type no longer exists.")
+            result = await self.repository.delete_template(guild_id, type_id)
+            if not result.changed:
+                raise ValueError("That custom proposal type no longer exists.")
+            return f"Proposal type “{existing.name}” was deleted.", None
+        raise ValueError("This workspace action is not supported.")
 
     async def _veto(self, proposal: Proposal, reason: str) -> str:
         result = await self.repository.transition(
@@ -495,6 +758,7 @@ class InteractionProcessor:
         now = utcnow()
         finalized = 0
         repaired = 0
+        rendered = 0
         effects_retried = 0
         for proposal in active:
             if now >= proposal.deadline_at:
@@ -514,6 +778,9 @@ class InteractionProcessor:
                 )
                 await self.repository.mark_task_scheduled(proposal.id, task_name)
                 repaired += 1
+            if proposal.render_version < CURRENT_RENDER_VERSION:
+                await self._sync_announcement(proposal.id)
+                rendered += 1
         for proposal in await self.repository.list_pending_terminal_effects():
             await self.sync_terminal_effects(proposal)
             effects_retried += 1
@@ -521,9 +788,10 @@ class InteractionProcessor:
             "active": len(active),
             "finalized": finalized,
             "repaired": repaired,
+            "rendered": rendered,
             "effects_retried": effects_retried,
         }
-        if finalized or repaired or effects_retried:
+        if finalized or repaired or rendered or effects_retried:
             logger.warning("Reconciliation repaired proposal state", extra=result)
         return result
 
@@ -577,7 +845,13 @@ class InteractionProcessor:
                 )
             current = await self.repository.get_proposal(proposal_id)
             if not current or current.announcement_version == version:
-                return current or latest
+                stable = current or latest
+                return (
+                    await self.repository.mark_rendered(
+                        proposal_id, CURRENT_RENDER_VERSION
+                    )
+                    or stable
+                )
         return latest
 
     async def _active_proposal(

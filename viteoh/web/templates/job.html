@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel narrow job" {% if status in ["queued", "processing"] %}hx-get="/app/jobs/{{ job.id if job else request.path_params.job_id }}?guild={{ guild_id }}" hx-trigger="every 1s" hx-select=".job" hx-swap="outerHTML"{% endif %}>
+  {% if status in ["queued", "processing"] %}
+  <span class="spinner" aria-hidden="true"></span>
+  <h1>Saving your changes…</h1><p>This page will update automatically.</p>
+  {% elif status == "succeeded" %}
+  <h1>Done</h1><p>{{ job.message }}</p>
+  <div class="actions">
+    {% if job.proposal_id %}<a class="button primary" href="/app/proposals/{{ job.proposal_id }}?guild={{ job.guild_id }}">View proposal</a>{% endif %}
+    <a class="button" href="/app?guild={{ job.guild_id }}">Back to proposals</a>
+  </div>
+  {% else %}
+  <h1>That did not work</h1><p>{{ job.message }}</p>
+  <a class="button" href="/app?guild={{ job.guild_id }}">Return to the workspace</a>
+  {% endif %}
+</section>
+{% endblock %}

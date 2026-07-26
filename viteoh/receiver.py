@@ -8,6 +8,7 @@ from viteoh.components import (
     modal,
     parse_component_id,
     text_input,
+    user_select,
 )
 from viteoh.config import Settings
 from viteoh.domain import ProposalStatus, ProposalTemplate
@@ -74,6 +75,14 @@ class InteractionReceiver:
                 scope, action, resource_id = parsed
                 if scope == "proposal" and action == "veto":
                     return 200, _veto_modal(resource_id)
+                if scope == "proposal" and action == "nudge":
+                    return 200, _message(
+                        "Choose one member to notify anonymously.",
+                        user_select(
+                            f"proposal:nudge-select:{resource_id}",
+                            "Choose a server member",
+                        ),
+                    )
                 if action == "cancel-delete":
                     return 200, {
                         "type": 7,

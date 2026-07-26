@@ -9,6 +9,10 @@ WebSocket. It is stateless on Cloud Run: Firestore owns proposal state, Cloud
 Tasks delivers exact deadline work with retries, and Cloud Scheduler repairs
 missing tasks every five minutes.
 
+Members use one private `/proposal` launcher. Its random, single-use link
+expires after five minutes and establishes a seven-day secure web session
+without asking the member to complete Discord OAuth again.
+
 ## Architecture
 
 ```text
@@ -16,7 +20,9 @@ Discord
    │ signed interaction
    ▼
 Public Cloud Run receiver (min 1)
-   │ deferred response + deterministic task
+   │ deferred response + one-time workspace launch
+   ├────────────────────────► Public Cloud Run web workspace (scales to 0)
+   │
    ▼
 Cloud Tasks ───────────────► Private Cloud Run worker (scales to 0)
    │                                  │
@@ -27,25 +33,29 @@ Cloud Tasks ───────────────► Private Cloud Run w
 Cloud Scheduler ── every 5 minutes ──► reconciliation endpoint
 ```
 
-Only `/interactions` is public. Cloud Tasks and Scheduler invoke the worker
-with a Google-signed OIDC token, and Cloud Run IAM rejects every other caller.
+The receiver and workspace are public HTTP services. The receiver accepts only
+valid Discord signatures; the workspace accepts a one-time launch or a signed
+session. Cloud Tasks, Scheduler, and the workspace invoke the worker with a
+Google-signed OIDC token, and Cloud Run IAM rejects every other caller.
 
-## Commands
+## Member experience
 
-- `/proposal create <title> [type] [context]` creates a proposal without a modal.
-  General and New member types are built in; the type labels the proposal while
-  leaving its title unchanged.
-- `/proposal list` links to active proposals and their deadlines.
-- `/proposal nudge <proposal> <user>` anonymously DMs one member.
-- `/proposal preferences [new_proposals] [nudges]` controls per-server DMs.
-- `/proposal configure [channel] [duration_minutes]` configures the server and
-  requires Manage Server permission (or the bot-owner override).
-- `/proposal delete <proposal>` confirms and deletes an active proposal.
-- `/proposal type create|edit|delete|list` manages up to 20 guild-local proposal
-  types. Type mutations require Manage Server permission.
-- `/proposal help` explains the consent model and commands.
+`/proposal` returns an ephemeral **Open workspace** button for the current
+member and server. The launch code is 256 bits of randomness, stored only as a
+hash, consumed transactionally once, and expired after five minutes. It creates
+a Secure, HttpOnly, SameSite=Lax session cookie lasting seven days. Run
+`/proposal` once in another server to add it to the workspace switcher.
 
-Proposal messages provide **Veto**, **Acknowledge**, and **Subscribe** buttons.
+The workspace provides a responsive dashboard, retained history, proposal
+creation and preview, preferences, and proposal detail pages. Members with
+Manage Server permission (or the owner override) also see server settings,
+administrative deletion, and management for up to 20 custom proposal types.
+Pages and mutations revalidate live guild membership and Discord permissions
+through the private worker.
+
+Active proposal messages provide **Veto**, **Acknowledge**, **Subscribe**,
+**Nudge**, and **Open workspace** buttons. Nudge opens an ephemeral Discord
+member picker. Terminal messages retain only **Open workspace**.
 Acknowledgements expose only an aggregate count and never act as yes votes.
 Veto opens an ephemeral form for an optional public reason; the vetoing
 identity is neither stored nor shown. Announcements are rich embeds. Terminal
@@ -74,9 +84,9 @@ uv run pytest
 uv run pip-audit --skip-editable
 ```
 
-Copy `.env.example` to `.env` only for local execution. The production receiver
-and worker are separate services selected by `SERVICE_ROLE`. Local repository
-tests use an in-memory implementation; Google integration testing should run
+Copy `.env.example` to `.env` only for local execution. The production receiver,
+worker, and web workspace are separate services selected by `SERVICE_ROLE`.
+Local repository tests use an in-memory implementation; Google integration testing should run
 with the Firestore emulator:
 
 ```bash
@@ -89,6 +99,9 @@ Run a local receiver with:
 ```bash
 SERVICE_ROLE=receiver uv run uvicorn viteoh.app:app --reload
 ```
+
+The web role also needs `WORKSPACE_URL`, `WORKER_URL`, and a long random
+`WORKSPACE_SIGNING_SECRET`. Set `SECURE_COOKIES=false` only for local HTTP.
 
 ## Google Cloud deployment
 
@@ -121,11 +134,12 @@ Secret:
 - `DISCORD_PUBLIC_KEY`
 
 Push to `main`. CI builds an immutable commit-SHA image, applies only the
-application stack, deploys both services, and runs the command-registration
+application stack, deploys all three services, and runs the command-registration
 Cloud Run job.
 
-The bootstrap stack creates the Secret Manager container but no secret version,
-ensuring the bot token never enters source control, Terraform state, or GitHub.
+The bootstrap stack creates Secret Manager containers but no secret versions,
+ensuring the bot token and workspace signing key never enter source control,
+Terraform state, or GitHub.
 
 ## Discord cutover
 
@@ -144,12 +158,14 @@ ensuring the bot token never enters source control, Terraform state, or GitHub.
 5. Stop the old Gateway/WebSocket process.
 6. Install the same application in each server with the `bot` and
    `applications.commands` scopes.
-7. Run `/proposal configure channel:#test-output duration_minutes:1` in the
-   test server and `/proposal configure channel:#live-output
-   duration_minutes:2880` in the live server.
-8. Smoke-test both built-in types, a custom type, autocomplete, preferences,
-   nudge, acknowledgement, an anonymous veto reason, terminal replies, and
-   deletion independently in both servers.
+7. Run `/proposal` in the test server, open **Settings**, choose the test
+   channel, and set one minute. Repeat in the live server with 2,880 minutes.
+8. Smoke-test the workspace, both built-in types, a custom type, preferences,
+   the Discord Nudge picker, acknowledgement, an anonymous veto reason,
+   terminal replies, and deletion independently in both servers.
+
+No Discord OAuth redirect URI or OAuth client secret is required. Authentication
+is the signed Discord interaction followed by the short-lived, one-time launch.
 
 The bot remains shown as offline because it uses HTTP interactions rather than
 a Discord Gateway connection. Global command changes can take time to appear.

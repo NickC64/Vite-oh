@@ -7,6 +7,7 @@ import pytest
 from viteoh.config import Settings
 from viteoh.discord_api import (
     EMBED_LINKS,
+    MANAGE_GUILD,
     READ_MESSAGE_HISTORY,
     SEND_MESSAGES,
     VIEW_CHANNEL,
@@ -208,3 +209,99 @@ async def test_validate_output_channel_requires_embed_links() -> None:
     with pytest.raises(DiscordAPIError, match="Embed Links"):
         await client.validate_output_channel("guild", "channel")
     await client.close()
+
+
+async def test_workspace_access_resolves_member_and_bot_channel_permissions() -> None:
+    required = VIEW_CHANNEL | SEND_MESSAGES | EMBED_LINKS | READ_MESSAGE_HISTORY
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/users/@me"):
+            return httpx.Response(200, json={"id": "bot"})
+        if path.endswith("/guilds/guild/members/user"):
+            return httpx.Response(
+                200,
+                json={
+                    "nick": "Ada",
+                    "roles": ["member-role"],
+                    "user": {"id": "user", "username": "ada"},
+                },
+            )
+        if path.endswith("/guilds/guild/members/bot"):
+            return httpx.Response(
+                200, json={"roles": ["bot-role"], "user": {"id": "bot"}}
+            )
+        if path.endswith("/guilds/guild/roles"):
+            return httpx.Response(
+                200,
+                json=[
+                    {"id": "guild", "permissions": "0"},
+                    {
+                        "id": "member-role",
+                        "permissions": str(VIEW_CHANNEL | MANAGE_GUILD),
+                    },
+                    {"id": "bot-role", "permissions": str(required)},
+                ],
+            )
+        if path.endswith("/guilds/guild/channels"):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "ready",
+                        "name": "proposals",
+                        "type": 0,
+                        "permission_overwrites": [],
+                    },
+                    {
+                        "id": "hidden",
+                        "name": "staff",
+                        "type": 0,
+                        "permission_overwrites": [
+                            {
+                                "id": "guild",
+                                "type": 0,
+                                "allow": "0",
+                                "deny": str(VIEW_CHANNEL),
+                            }
+                        ],
+                    },
+                    {"id": "voice", "name": "voice", "type": 2},
+                ],
+            )
+        if path.endswith("/guilds/guild"):
+            return httpx.Response(
+                200,
+                json={
+                    "id": "guild",
+                    "name": "Test Guild",
+                    "owner_id": "someone-else",
+                },
+            )
+        raise AssertionError(path)
+
+    client = DiscordClient(
+        Settings(discord_api_base_url="https://discord.test/api/v10"),
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    access = await client.get_workspace_access("guild", "user")
+    assert access["display_name"] == "Ada"
+    assert access["can_manage"]
+    assert access["visible_channel_ids"] == ["ready", "voice"]
+    assert access["output_channels"] == [
+        {"id": "ready", "name": "proposals", "bot_ready": True}
+    ]
+    await client.close()
+
+
+def test_administrator_channel_permissions_ignore_overwrite_denials() -> None:
+    from viteoh.discord_api import ADMINISTRATOR, _channel_permissions
+
+    permissions = _channel_permissions(
+        ADMINISTRATOR,
+        "guild",
+        "admin",
+        set(),
+        [{"id": "guild", "type": 0, "allow": "0", "deny": str(VIEW_CHANNEL)}],
+    )
+    assert permissions & VIEW_CHANNEL

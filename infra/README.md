@@ -2,9 +2,9 @@
 
 Infrastructure is split into two independently managed states:
 
-- `bootstrap/` owns project APIs, Artifact Registry, the Discord token secret,
-  GitHub Workload Identity Federation, the deployer service account, and the
-  deployer's state-bucket access.
+- `bootstrap/` owns project APIs, Artifact Registry, Discord and workspace
+  secret containers, GitHub Workload Identity Federation, the deployer service
+  account, and the deployer's state-bucket access.
 - `application/` owns Firestore, runtime service accounts and IAM, Cloud Tasks,
   Cloud Run, Cloud Scheduler, command registration, logging metrics, and
   alerts.
@@ -60,6 +60,18 @@ printf '%s' "$DISCORD_BOT_TOKEN" |
     --project=mail-in-votes \
     --data-file=-
 ```
+
+Add an independent, high-entropy workspace signing key:
+
+```bash
+openssl rand -base64 48 |
+  gcloud secrets versions add viteoh-workspace-signing-key \
+    --project=mail-in-votes \
+    --data-file=-
+```
+
+The key signs browser sessions and hashes requester identifiers. Do not reuse
+the Discord token or place this key in GitHub or tfvars.
 
 Use the bootstrap outputs for the GitHub `production` environment:
 

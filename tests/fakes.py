@@ -12,6 +12,8 @@ from viteoh.domain import (
     ProposalTemplate,
     TemplateMutationResult,
     TransitionResult,
+    WorkspaceJob,
+    WorkspaceLaunch,
 )
 from viteoh.repository import reservation_id
 from viteoh.templates import BUILTIN_TEMPLATES, MAX_CUSTOM_TEMPLATES, builtin_template
@@ -29,11 +31,19 @@ class FakeRepository:
         self.nudges: dict[str, dict[str, str]] = {}
         self.nudge_preferences: dict[tuple[str, str], bool] = {}
         self.templates: dict[tuple[str, str], ProposalTemplate] = {}
+        self.workspace_jobs: dict[str, WorkspaceJob] = {}
+        self.workspace_launches: dict[str, WorkspaceLaunch] = {}
         self.lock = asyncio.Lock()
         self.next_id = "12345678-1234-1234-1234-123456789abc"
 
     async def get_guild_config(self, guild_id: str) -> GuildConfig | None:
         return self.guilds.get(guild_id)
+
+    async def list_guild_configs(self, guild_ids: list[str]) -> list[GuildConfig]:
+        return sorted(
+            (config for guild_id in guild_ids if (config := self.guilds.get(guild_id))),
+            key=lambda item: item.guild_name.casefold(),
+        )
 
     async def set_guild_config(
         self,
@@ -105,6 +115,12 @@ class FakeRepository:
     async def get_proposal(self, proposal_id: str) -> Proposal | None:
         return self.proposals.get(proposal_id)
 
+    async def get_proposal_for_interaction(
+        self, interaction_id: str
+    ) -> Proposal | None:
+        proposal_id = self.interactions.get(interaction_id)
+        return self.proposals.get(proposal_id) if proposal_id else None
+
     async def list_active(self, guild_id: str | None = None) -> list[Proposal]:
         return [
             proposal
@@ -112,6 +128,24 @@ class FakeRepository:
             if proposal.status is ProposalStatus.ACTIVE
             and (guild_id is None or proposal.guild_id == guild_id)
         ]
+
+    async def list_guild_proposals(
+        self,
+        guild_id: str,
+        *,
+        limit: int = 50,
+        before: datetime | None = None,
+    ) -> list[Proposal]:
+        return sorted(
+            (
+                proposal
+                for proposal in self.proposals.values()
+                if proposal.guild_id == guild_id
+                and (before is None or proposal.created_at < before)
+            ),
+            key=lambda proposal: proposal.created_at,
+            reverse=True,
+        )[:limit]
 
     async def list_pending_terminal_effects(self) -> list[Proposal]:
         return [
@@ -213,6 +247,13 @@ class FakeRepository:
         self, proposal_id: str, message_id: str
     ) -> Proposal | None:
         updated = replace(self.proposals[proposal_id], message_id=message_id)
+        self.proposals[proposal_id] = updated
+        return updated
+
+    async def mark_rendered(
+        self, proposal_id: str, render_version: int
+    ) -> Proposal | None:
+        updated = replace(self.proposals[proposal_id], render_version=render_version)
         self.proposals[proposal_id] = updated
         return updated
 
@@ -361,6 +402,70 @@ class FakeRepository:
             self.proposals[proposal_id], effects_complete=True
         )
 
+    async def set_workspace_job(
+        self,
+        job_id: str,
+        guild_id: str,
+        requester_hash: str,
+        action: str,
+        status: str,
+        message: str,
+        proposal_id: str | None,
+        now: datetime,
+        ttl_seconds: int,
+    ) -> WorkspaceJob:
+        from datetime import timedelta
+
+        previous = self.workspace_jobs.get(job_id)
+        job = WorkspaceJob(
+            id=job_id,
+            guild_id=guild_id,
+            requester_hash=requester_hash,
+            action=action,
+            status=status,
+            message=message,
+            proposal_id=proposal_id,
+            created_at=previous.created_at if previous else now,
+            updated_at=now,
+            expires_at=now + timedelta(seconds=ttl_seconds),
+        )
+        self.workspace_jobs[job_id] = job
+        return job
+
+    async def get_workspace_job(self, job_id: str) -> WorkspaceJob | None:
+        return self.workspace_jobs.get(job_id)
+
+    async def create_workspace_launch(
+        self,
+        code_hash: str,
+        user_id: str,
+        guild_id: str,
+        proposal_id: str | None,
+        now: datetime,
+        ttl_seconds: int,
+    ) -> WorkspaceLaunch:
+        from datetime import timedelta
+
+        launch = WorkspaceLaunch(
+            user_id=user_id,
+            guild_id=guild_id,
+            proposal_id=proposal_id,
+            created_at=now,
+            expires_at=now + timedelta(seconds=ttl_seconds),
+        )
+        self.workspace_launches[code_hash] = launch
+        return launch
+
+    async def consume_workspace_launch(
+        self, code_hash: str, now: datetime
+    ) -> WorkspaceLaunch | None:
+        launch = self.workspace_launches.get(code_hash)
+        if not launch or launch.consumed_at or now >= launch.expires_at:
+            return None
+        consumed = replace(launch, consumed_at=now)
+        self.workspace_launches[code_hash] = consumed
+        return consumed
+
 
 class FakeTasks:
     def __init__(self) -> None:
@@ -368,10 +473,15 @@ class FakeTasks:
         self.deadlines: dict[str, datetime] = {}
         self.deleted: list[str] = []
         self.missing: set[str] = set()
+        self.workspace: list[dict[str, Any]] = []
 
     async def enqueue_interaction(self, payload: dict[str, Any]) -> str:
         self.interactions.append(payload)
         return f"tasks/interaction-{payload['id']}"
+
+    async def enqueue_workspace(self, payload: dict[str, Any]) -> str:
+        self.workspace.append(payload)
+        return f"tasks/workspace-{payload['id']}"
 
     async def ensure_deadline(
         self,
@@ -398,6 +508,7 @@ class FakeTasks:
 class FakeDiscord:
     def __init__(self) -> None:
         self.responses: list[str] = []
+        self.response_components: list[list[dict[str, object]] | None] = []
         self.announcements: list[Proposal] = []
         self.synced: list[Proposal] = []
         self.outcomes: list[Proposal] = []
@@ -413,9 +524,15 @@ class FakeDiscord:
         }
 
     async def edit_interaction_response(
-        self, token: str, content: str, *, clear_components: bool = False
+        self,
+        token: str,
+        content: str,
+        *,
+        clear_components: bool = False,
+        components: list[dict[str, object]] | None = None,
     ) -> None:
         self.responses.append(content)
+        self.response_components.append(components)
 
     async def create_proposal_announcement(self, proposal: Proposal) -> str:
         self.announcements.append(proposal)
@@ -436,6 +553,29 @@ class FakeDiscord:
         if not member:
             raise DiscordAPIError(404, "member not found")
         return member
+
+    async def get_workspace_access(
+        self, guild_id: str, user_id: str
+    ) -> dict[str, object]:
+        if guild_id not in {"guild", "guild-2"}:
+            from viteoh.discord_api import DiscordAPIError
+
+            raise DiscordAPIError(404, "guild not found")
+        return {
+            "guild_id": guild_id,
+            "guild_name": ("Test Guild" if guild_id == "guild" else "Second Guild"),
+            "display_name": user_id,
+            "is_member": True,
+            "can_manage": user_id in {"admin", "owner"},
+            "visible_channel_ids": ["channel" if guild_id == "guild" else "channel-2"],
+            "output_channels": [
+                {
+                    "id": "channel" if guild_id == "guild" else "channel-2",
+                    "name": "proposals",
+                    "bot_ready": True,
+                }
+            ],
+        }
 
     async def validate_output_channel(self, guild_id: str, channel_id: str) -> str:
         channel = self.channels.get(channel_id)

@@ -38,6 +38,14 @@ resource "google_secret_manager_secret" "discord_bot_token" {
   depends_on = [google_project_service.apis]
 }
 
+resource "google_secret_manager_secret" "workspace_signing_key" {
+  secret_id = "viteoh-workspace-signing-key"
+  replication {
+    auto {}
+  }
+  depends_on = [google_project_service.apis]
+}
+
 resource "google_iam_workload_identity_pool" "github" {
   workload_identity_pool_id = "viteoh-github"
   display_name              = "Vite-oh GitHub Actions"

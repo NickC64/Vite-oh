@@ -3,7 +3,7 @@ import unicodedata
 import uuid
 from collections.abc import Sequence
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Protocol
 
 from google.cloud import firestore
@@ -18,6 +18,8 @@ from viteoh.domain import (
     ProposalTemplate,
     TemplateMutationResult,
     TransitionResult,
+    WorkspaceJob,
+    WorkspaceLaunch,
 )
 from viteoh.templates import BUILTIN_TEMPLATES, MAX_CUSTOM_TEMPLATES, builtin_template
 
@@ -35,6 +37,10 @@ def reservation_id(guild_id: str, normalized_title: str) -> str:
 
 class Repository(Protocol):
     async def get_guild_config(self, guild_id: str) -> GuildConfig | None: ...
+
+    async def list_guild_configs(
+        self, guild_ids: Sequence[str]
+    ) -> Sequence[GuildConfig]: ...
 
     async def set_guild_config(
         self,
@@ -63,7 +69,19 @@ class Repository(Protocol):
 
     async def get_proposal(self, proposal_id: str) -> Proposal | None: ...
 
+    async def get_proposal_for_interaction(
+        self, interaction_id: str
+    ) -> Proposal | None: ...
+
     async def list_active(self, guild_id: str | None = None) -> Sequence[Proposal]: ...
+
+    async def list_guild_proposals(
+        self,
+        guild_id: str,
+        *,
+        limit: int = 50,
+        before: datetime | None = None,
+    ) -> Sequence[Proposal]: ...
 
     async def list_pending_terminal_effects(self) -> Sequence[Proposal]: ...
 
@@ -73,6 +91,10 @@ class Repository(Protocol):
 
     async def set_message_id(
         self, proposal_id: str, message_id: str
+    ) -> Proposal | None: ...
+
+    async def mark_rendered(
+        self, proposal_id: str, render_version: int
     ) -> Proposal | None: ...
 
     async def set_outcome_message_id(
@@ -156,6 +178,35 @@ class Repository(Protocol):
 
     async def mark_effects_complete(self, proposal_id: str) -> None: ...
 
+    async def set_workspace_job(
+        self,
+        job_id: str,
+        guild_id: str,
+        requester_hash: str,
+        action: str,
+        status: str,
+        message: str,
+        proposal_id: str | None,
+        now: datetime,
+        ttl_seconds: int,
+    ) -> WorkspaceJob: ...
+
+    async def get_workspace_job(self, job_id: str) -> WorkspaceJob | None: ...
+
+    async def create_workspace_launch(
+        self,
+        code_hash: str,
+        user_id: str,
+        guild_id: str,
+        proposal_id: str | None,
+        now: datetime,
+        ttl_seconds: int,
+    ) -> WorkspaceLaunch: ...
+
+    async def consume_workspace_launch(
+        self, code_hash: str, now: datetime
+    ) -> WorkspaceLaunch | None: ...
+
 
 class FirestoreRepository:
     def __init__(self, client: firestore.AsyncClient) -> None:
@@ -166,6 +217,16 @@ class FirestoreRepository:
         if not snapshot.exists:
             return None
         return GuildConfig.from_document(snapshot.id, snapshot.to_dict() or {})
+
+    async def list_guild_configs(
+        self, guild_ids: Sequence[str]
+    ) -> Sequence[GuildConfig]:
+        configs: list[GuildConfig] = []
+        for guild_id in guild_ids:
+            config = await self.get_guild_config(guild_id)
+            if config:
+                configs.append(config)
+        return sorted(configs, key=lambda item: item.guild_name.casefold())
 
     async def set_guild_config(
         self,
@@ -269,6 +330,7 @@ class FirestoreRepository:
                 "acknowledgement_count": 0,
                 "nudge_count": 0,
                 "announcement_version": 0,
+                "render_version": 0,
                 "veto_reason": "",
                 "outcome_message_id": None,
             }
@@ -303,12 +365,43 @@ class FirestoreRepository:
             return None
         return Proposal.from_document(snapshot.id, snapshot.to_dict() or {})
 
+    async def get_proposal_for_interaction(
+        self, interaction_id: str
+    ) -> Proposal | None:
+        snapshot = (
+            await self.client.collection("interactions").document(interaction_id).get()
+        )
+        if not snapshot.exists:
+            return None
+        proposal_id = str((snapshot.to_dict() or {}).get("proposal_id", ""))
+        return await self.get_proposal(proposal_id) if proposal_id else None
+
     async def list_active(self, guild_id: str | None = None) -> Sequence[Proposal]:
         query = self.client.collection("proposals").where(
             filter=FieldFilter("status", "==", ProposalStatus.ACTIVE.value)
         )
         if guild_id is not None:
             query = query.where(filter=FieldFilter("guild_id", "==", guild_id))
+        return [
+            Proposal.from_document(snapshot.id, snapshot.to_dict() or {})
+            async for snapshot in query.stream()
+        ]
+
+    async def list_guild_proposals(
+        self,
+        guild_id: str,
+        *,
+        limit: int = 50,
+        before: datetime | None = None,
+    ) -> Sequence[Proposal]:
+        query = (
+            self.client.collection("proposals")
+            .where(filter=FieldFilter("guild_id", "==", guild_id))
+            .order_by("created_at", direction=firestore.Query.DESCENDING)
+        )
+        if before is not None:
+            query = query.start_after({"created_at": before})
+        query = query.limit(max(1, min(limit, 100)))
         return [
             Proposal.from_document(snapshot.id, snapshot.to_dict() or {})
             async for snapshot in query.stream()
@@ -501,6 +594,13 @@ class FirestoreRepository:
     ) -> Proposal | None:
         ref = self.client.collection("proposals").document(proposal_id)
         await ref.update({"message_id": message_id})
+        return await self.get_proposal(proposal_id)
+
+    async def mark_rendered(
+        self, proposal_id: str, render_version: int
+    ) -> Proposal | None:
+        ref = self.client.collection("proposals").document(proposal_id)
+        await ref.update({"render_version": render_version})
         return await self.get_proposal(proposal_id)
 
     async def set_outcome_message_id(
@@ -806,3 +906,81 @@ class FirestoreRepository:
             .document(proposal_id)
             .update({"effects_complete": True})
         )
+
+    async def set_workspace_job(
+        self,
+        job_id: str,
+        guild_id: str,
+        requester_hash: str,
+        action: str,
+        status: str,
+        message: str,
+        proposal_id: str | None,
+        now: datetime,
+        ttl_seconds: int,
+    ) -> WorkspaceJob:
+        ref = self.client.collection("workspace_jobs").document(job_id)
+        previous = await ref.get()
+        previous_data = previous.to_dict() or {}
+        data = {
+            "guild_id": guild_id,
+            "requester_hash": requester_hash,
+            "action": action,
+            "status": status,
+            "message": message,
+            "proposal_id": proposal_id,
+            "created_at": previous_data.get("created_at", now),
+            "updated_at": now,
+            "expires_at": now + timedelta(seconds=ttl_seconds),
+        }
+        await ref.set(data)
+        return WorkspaceJob.from_document(job_id, data)
+
+    async def get_workspace_job(self, job_id: str) -> WorkspaceJob | None:
+        snapshot = await self.client.collection("workspace_jobs").document(job_id).get()
+        if not snapshot.exists:
+            return None
+        return WorkspaceJob.from_document(snapshot.id, snapshot.to_dict() or {})
+
+    async def create_workspace_launch(
+        self,
+        code_hash: str,
+        user_id: str,
+        guild_id: str,
+        proposal_id: str | None,
+        now: datetime,
+        ttl_seconds: int,
+    ) -> WorkspaceLaunch:
+        data = {
+            "user_id": user_id,
+            "guild_id": guild_id,
+            "proposal_id": proposal_id,
+            "created_at": now,
+            "expires_at": now + timedelta(seconds=ttl_seconds),
+            "consumed_at": None,
+        }
+        await (
+            self.client.collection("workspace_launches")
+            .document(code_hash)
+            .create(data)
+        )
+        return WorkspaceLaunch.from_document(data)
+
+    async def consume_workspace_launch(
+        self, code_hash: str, now: datetime
+    ) -> WorkspaceLaunch | None:
+        ref = self.client.collection("workspace_launches").document(code_hash)
+        transaction = self.client.transaction()
+
+        @firestore.async_transactional
+        async def consume(transaction: Any) -> WorkspaceLaunch | None:
+            snapshot = await ref.get(transaction=transaction)
+            if not snapshot.exists:
+                return None
+            launch = WorkspaceLaunch.from_document(snapshot.to_dict() or {})
+            if launch.consumed_at or now >= launch.expires_at:
+                return None
+            transaction.update(ref, {"consumed_at": now})
+            return replace(launch, consumed_at=now)
+
+        return await consume(transaction)

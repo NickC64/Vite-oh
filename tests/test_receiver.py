@@ -82,6 +82,29 @@ async def test_veto_prompts_without_worker(
     assert not tasks.interactions
 
 
+async def test_nudge_button_opens_private_user_selector(
+    receiver: tuple[InteractionReceiver, SigningKey, FakeTasks],
+) -> None:
+    service, key, tasks = receiver
+    proposal_id = "12345678-1234-1234-1234-123456789abc"
+    _, response = await signed_receive(
+        service,
+        key,
+        {
+            "id": "nudge",
+            "type": 3,
+            "guild_id": "guild",
+            "member": {"user": {"id": "user"}},
+            "data": {"custom_id": component_id("proposal", "nudge", proposal_id)},
+        },
+    )
+    assert response["type"] == 4
+    selector = response["data"]["components"][0]["components"][0]
+    assert selector["type"] == 5
+    assert selector["custom_id"] == f"proposal:nudge-select:{proposal_id}"
+    assert not tasks.interactions
+
+
 async def test_create_command_is_deferred_without_opening_a_modal() -> None:
     key = SigningKey.generate()
     repository = FakeRepository()

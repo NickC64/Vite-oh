@@ -13,3 +13,7 @@ output "deployer_service_account" {
 output "discord_bot_token_secret" {
   value = google_secret_manager_secret.discord_bot_token.id
 }
+
+output "workspace_signing_key_secret" {
+  value = google_secret_manager_secret.workspace_signing_key.id
+}
