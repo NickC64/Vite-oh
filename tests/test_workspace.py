@@ -349,6 +349,49 @@ def test_preferences_settings_types_jobs_and_security_headers() -> None:
         assert "duration minutes" in invalid.text
 
 
+def test_created_proposal_job_renders_web_timestamp() -> None:
+    client, repository, _, _ = web_system()
+    now = utcnow()
+    result = asyncio.run(
+        repository.create_proposal(
+            "web-job-proposal",
+            "guild",
+            "Test Guild",
+            "channel",
+            "Rendered deadline",
+            "rendered deadline",
+            "",
+            "",
+            "",
+            now,
+            now + timedelta(minutes=2),
+        )
+    )
+    assert result.proposal
+    asyncio.run(
+        repository.set_workspace_job(
+            "create-job",
+            "guild",
+            SignedTokenCodec("secret").fingerprint("admin"),
+            "create",
+            "succeeded",
+            "Proposal created successfully. It will pass <t:123:R> unless vetoed.",
+            result.proposal.id,
+            now,
+            3600,
+        )
+    )
+
+    with client:
+        login(client)
+        response = client.get("/app/jobs/create-job?guild=guild")
+
+    assert response.status_code == 200
+    assert "<t:123:R>" not in response.text
+    assert f'data-relative="{result.proposal.deadline_at.isoformat()}"' in response.text
+    assert "unless vetoed" in response.text
+
+
 def test_navigation_theme_controls_and_dialogs_are_csp_safe() -> None:
     client, repository, _, _ = web_system()
     with client:

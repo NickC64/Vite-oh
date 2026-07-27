@@ -115,18 +115,25 @@ if (form) {
   update();
 }
 
-for (const time of document.querySelectorAll("[data-relative]")) {
-  const deadline = new Date(time.dataset.relative);
-  const seconds = Math.round((deadline - new Date()) / 1000);
-  const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
-  const [amount, unit] =
-    Math.abs(seconds) < 3600
-      ? [Math.round(seconds / 60), "minute"]
-      : Math.abs(seconds) < 86400
-        ? [Math.round(seconds / 3600), "hour"]
-        : [Math.round(seconds / 86400), "day"];
-  time.textContent = formatter.format(amount, unit);
+function renderRelativeTimes(root = document) {
+  for (const time of root.querySelectorAll("[data-relative]")) {
+    const deadline = new Date(time.dataset.relative);
+    const seconds = Math.round((deadline - new Date()) / 1000);
+    const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+    const [amount, unit] =
+      Math.abs(seconds) < 3600
+        ? [Math.round(seconds / 60), "minute"]
+        : Math.abs(seconds) < 86400
+          ? [Math.round(seconds / 3600), "hour"]
+          : [Math.round(seconds / 86400), "day"];
+    time.textContent = formatter.format(amount, unit);
+  }
 }
+
+renderRelativeTimes();
+document.addEventListener("htmx:afterSwap", (event) => {
+  renderRelativeTimes(event.detail.target);
+});
 
 for (const button of document.querySelectorAll("[data-history-back]")) {
   button.addEventListener("click", () => {

@@ -126,6 +126,21 @@ def test_workspace_server_rail_theme_and_mobile_drawer(
         page.get_by_role("dialog").get_by_role("heading", name="Delete Policy?")
     ).to_be_visible()
     page.get_by_role("button", name="Cancel").click()
+    rendered_time = page.evaluate(
+        """() => {
+          const container = document.createElement("div");
+          const time = document.createElement("time");
+          time.dataset.relative = new Date(Date.now() + 120000).toISOString();
+          time.textContent = "<t:123:R>";
+          container.append(time);
+          document.body.append(container);
+          document.dispatchEvent(
+            new CustomEvent("htmx:afterSwap", { detail: { target: container } })
+          );
+          return time.textContent;
+        }"""
+    )
+    assert rendered_time == "in 2 minutes"
 
     current_theme = page.locator("html").get_attribute("data-theme")
     page.locator("[data-theme-toggle]").last.click()

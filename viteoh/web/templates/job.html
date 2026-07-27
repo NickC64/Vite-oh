@@ -5,7 +5,16 @@
   <span class="spinner" aria-hidden="true"></span>
   <h1>Saving your changes…</h1><p>This page will update automatically.</p>
   {% elif status == "succeeded" %}
-  <h1>Done</h1><p>{{ job.message }}</p>
+  <h1>Done</h1>
+  {% if job.action == "create" and result_proposal %}
+  <p>
+    Proposal created successfully. It will pass
+    <time data-relative="{{ result_proposal.deadline_at.isoformat() }}">{{ result_proposal.deadline_at.strftime("%b %-d at %-I:%M %p UTC") }}</time>
+    unless vetoed.
+  </p>
+  {% else %}
+  <p>{{ job.message }}</p>
+  {% endif %}
   <div class="actions">
     {% if job.proposal_id %}<a class="button primary" href="/app/proposals/{{ job.proposal_id }}?guild={{ job.guild_id }}">View proposal</a>{% endif %}
     <a class="button" href="/app?guild={{ job.guild_id }}">Back to proposals</a>

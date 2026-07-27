@@ -12,6 +12,8 @@ missing tasks every five minutes.
 Members use one private `/proposal` launcher. Its random, single-use link
 expires after five minutes and establishes a seven-day secure web session
 without asking the member to complete Discord OAuth again.
+The bot profile also contains a clickable `/proposal` command mention,
+synchronized automatically whenever global commands are registered.
 
 ## Architecture
 

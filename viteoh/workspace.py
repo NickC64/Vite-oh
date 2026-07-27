@@ -510,6 +510,23 @@ class Workspace:
             session, guild_id, access, configs = await self._page_access(
                 request, selected
             )
+            result_proposal = None
+            if (
+                job
+                and job.status == "succeeded"
+                and job.action == "create"
+                and job.proposal_id
+            ):
+                proposal = await self.repository.get_proposal(job.proposal_id)
+                visible_channels = {
+                    str(item) for item in access.get("visible_channel_ids") or []
+                }
+                if (
+                    proposal
+                    and proposal.guild_id == guild_id
+                    and proposal.output_channel_id in visible_channels
+                ):
+                    result_proposal = proposal
             return self.templates.TemplateResponse(
                 request,
                 "job.html",
@@ -522,6 +539,7 @@ class Workspace:
                     active_page="",
                     job=job,
                     status=status,
+                    result_proposal=result_proposal,
                 ),
             )
 

@@ -783,6 +783,8 @@ async def test_workspace_jobs_reuse_durable_proposal_and_preference_logic(
     job = repository.workspace_jobs["web-create"]
     assert job.status == "succeeded"
     assert job.proposal_id
+    assert job.message == "Proposal created successfully."
+    assert "<t:" not in job.message
     assert repository.proposals[job.proposal_id].title == "Quiet hours"
     assert repository.proposals[job.proposal_id].type_name == ""
     assert tasks.deadlines

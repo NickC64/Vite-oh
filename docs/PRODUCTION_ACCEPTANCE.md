@@ -13,7 +13,8 @@ Interaction Endpoint URL.
 4. Confirm the worker rejects an unauthenticated request to `/tasks/reconcile`.
 5. Execute the command-registration job and confirm the only global command is
    `/proposal` with no options and that it is available in both servers and
-   the bot's DMs.
+   the bot's DMs. Open the bot profile and confirm its description contains a
+   clickable `/proposal` command mention.
 6. Confirm the Scheduler job can invoke reconciliation successfully.
 
 ## Short deadline smoke test

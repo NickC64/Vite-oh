@@ -724,7 +724,7 @@ class InteractionProcessor:
             )
             if not proposal or proposal.status is not ProposalStatus.ACTIVE:
                 raise ValueError(message)
-            return message, proposal.id
+            return "Proposal created successfully.", proposal.id
         if action == "preferences":
             await self.repository.set_guild_subscription(
                 guild_id, user_id, bool(data.get("new_proposals"))
