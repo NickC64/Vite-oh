@@ -5,6 +5,8 @@ COMMANDS: list[dict[str, object]] = [
         "name": "proposal",
         "description": "Open your private Vite-oh proposal workspace",
         "type": 1,
+        "contexts": [0, 1],
+        "integration_types": [0],
     }
 ]
 

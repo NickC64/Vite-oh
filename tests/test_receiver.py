@@ -64,6 +64,40 @@ async def test_command_is_deferred_and_enqueued(
     assert tasks.interactions == [payload]
 
 
+async def test_dm_launcher_uses_direct_user_and_is_deferred(
+    receiver: tuple[InteractionReceiver, SigningKey, FakeTasks],
+) -> None:
+    service, key, tasks = receiver
+    payload = {
+        "id": "dm-launch",
+        "type": 2,
+        "user": {"id": "user"},
+        "data": {"name": "proposal"},
+        "token": "token",
+    }
+    _, response = await signed_receive(service, key, payload)
+    assert response == {"type": 5}
+    assert tasks.interactions == [payload]
+
+
+async def test_dm_proposal_actions_are_rejected_with_guidance(
+    receiver: tuple[InteractionReceiver, SigningKey, FakeTasks],
+) -> None:
+    service, key, tasks = receiver
+    _, response = await signed_receive(
+        service,
+        key,
+        {
+            "id": "dm-action",
+            "type": 3,
+            "user": {"id": "user"},
+            "data": {"custom_id": "proposal:acknowledge:proposal-id"},
+        },
+    )
+    assert "Only `/proposal` can be used in a DM" in response["data"]["content"]
+    assert not tasks.interactions
+
+
 async def test_veto_prompts_without_worker(
     receiver: tuple[InteractionReceiver, SigningKey, FakeTasks],
 ) -> None:

@@ -9,7 +9,7 @@ import uvicorn
 from playwright.sync_api import Browser, Page, expect, sync_playwright
 
 from tests.test_workspace import web_system
-from viteoh.domain import GuildConfig, utcnow
+from viteoh.domain import GuildConfig, ProposalType, utcnow
 
 
 @pytest.fixture
@@ -22,6 +22,17 @@ def workspace_url() -> Iterator[str]:
         output_channel_id="channel-2",
         proposal_timeout_seconds=60,
         configured_by="admin",
+        created_at=now,
+        updated_at=now,
+    )
+    repository.types[("guild", "custom-type")] = ProposalType(
+        id="custom-type",
+        guild_id="guild",
+        name="Policy",
+        normalized_name="policy",
+        description="Changes to server policy",
+        created_by="admin",
+        updated_by="admin",
         created_at=now,
         updated_at=now,
     )
@@ -69,8 +80,16 @@ def test_workspace_server_rail_theme_and_mobile_drawer(
     workspace_page: Page, workspace_url: str
 ) -> None:
     page = workspace_page
+    console_errors: list[str] = []
+    page.on(
+        "console",
+        lambda message: (
+            console_errors.append(message.text) if message.type == "error" else None
+        ),
+    )
     page.goto(f"{workspace_url}/launch?code=good")
     expect(page.get_by_role("heading", name="Proposals", exact=True)).to_be_visible()
+    expect(page.locator(".viteoh-mark")).to_have_count(0)
     page.goto(f"{workspace_url}/launch?code=second")
 
     expect(page.get_by_role("link", name="Test Guild")).to_be_visible()
@@ -80,6 +99,33 @@ def test_workspace_server_rail_theme_and_mobile_drawer(
     page.get_by_role("link", name="History archive").click()
     expect(page.get_by_role("heading", name="History archive")).to_be_visible()
     page.get_by_role("link", name="Overview").click()
+    page.get_by_role("link", name="Preferences").click()
+    switch = page.locator(".switch-control").first
+    assert switch.evaluate(
+        """element => {
+          const box = element.getBoundingClientRect();
+          return box.width === 42 && box.height === 24;
+        }"""
+    )
+    page.locator(".switch-input").first.check()
+    assert switch.evaluate(
+        """element => {
+          const track = element.getBoundingClientRect();
+          const thumb = element.firstElementChild.getBoundingClientRect();
+          return thumb.left >= track.left && thumb.right <= track.right;
+        }"""
+    )
+    page.get_by_role("link", name="Proposal types").click()
+    page.get_by_role("button", name="Edit").click()
+    expect(
+        page.get_by_role("dialog").get_by_role("heading", name="Edit Policy")
+    ).to_be_visible()
+    page.get_by_role("button", name="Cancel").click()
+    page.get_by_role("button", name="Delete").click()
+    expect(
+        page.get_by_role("dialog").get_by_role("heading", name="Delete Policy?")
+    ).to_be_visible()
+    page.get_by_role("button", name="Cancel").click()
 
     current_theme = page.locator("html").get_attribute("data-theme")
     page.locator("[data-theme-toggle]").last.click()
@@ -106,6 +152,7 @@ def test_workspace_server_rail_theme_and_mobile_drawer(
     )
     page.keyboard.press("Escape")
     expect(page.locator("body")).not_to_have_class(re.compile(r"\bdrawer-open\b"))
+    assert not console_errors
 
 
 def test_server_switching_works_without_javascript(

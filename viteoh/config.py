@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     )
     workspace_auth_cache_seconds: int = Field(default=300, ge=0, le=300)
     secure_cookies: bool = True
+    asset_version: str = Field(default="dev", validation_alias="K_REVISION")
 
 
 @lru_cache

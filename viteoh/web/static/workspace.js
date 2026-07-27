@@ -127,3 +127,13 @@ for (const time of document.querySelectorAll("[data-relative]")) {
         : [Math.round(seconds / 86400), "day"];
   time.textContent = formatter.format(amount, unit);
 }
+
+for (const button of document.querySelectorAll("[data-history-back]")) {
+  button.addEventListener("click", () => {
+    if (history.length > 1) {
+      history.back();
+    } else {
+      location.assign("/");
+    }
+  });
+}

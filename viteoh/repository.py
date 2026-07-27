@@ -42,6 +42,8 @@ class Repository(Protocol):
         self, guild_ids: Sequence[str]
     ) -> Sequence[GuildConfig]: ...
 
+    async def list_all_guild_configs(self) -> Sequence[GuildConfig]: ...
+
     async def set_guild_config(
         self,
         guild_id: str,
@@ -203,6 +205,7 @@ class Repository(Protocol):
         code_hash: str,
         user_id: str,
         guild_id: str,
+        guild_ids: Sequence[str],
         proposal_id: str | None,
         now: datetime,
         ttl_seconds: int,
@@ -231,6 +234,16 @@ class FirestoreRepository:
             config = await self.get_guild_config(guild_id)
             if config:
                 configs.append(config)
+        return sorted(configs, key=lambda item: item.guild_name.casefold())
+
+    async def list_all_guild_configs(self) -> Sequence[GuildConfig]:
+        configs = [
+            GuildConfig.from_document(
+                snapshot.id,
+                snapshot.to_dict() or {},
+            )
+            async for snapshot in self.client.collection("guilds").stream()
+        ]
         return sorted(configs, key=lambda item: item.guild_name.casefold())
 
     async def set_guild_config(
@@ -1049,6 +1062,7 @@ class FirestoreRepository:
         code_hash: str,
         user_id: str,
         guild_id: str,
+        guild_ids: Sequence[str],
         proposal_id: str | None,
         now: datetime,
         ttl_seconds: int,
@@ -1056,6 +1070,7 @@ class FirestoreRepository:
         data = {
             "user_id": user_id,
             "guild_id": guild_id,
+            "guild_ids": list(dict.fromkeys(guild_ids)),
             "proposal_id": proposal_id,
             "created_at": now,
             "expires_at": now + timedelta(seconds=ttl_seconds),

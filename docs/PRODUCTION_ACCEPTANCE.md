@@ -12,7 +12,8 @@ Interaction Endpoint URL.
    zero minimum instances.
 4. Confirm the worker rejects an unauthenticated request to `/tasks/reconcile`.
 5. Execute the command-registration job and confirm the only global command is
-   `/proposal` with no options.
+   `/proposal` with no options and that it is available in both servers and
+   the bot's DMs.
 6. Confirm the Scheduler job can invoke reconciliation successfully.
 
 ## Short deadline smoke test
@@ -20,6 +21,10 @@ Interaction Endpoint URL.
 Run `/proposal` in the testing guild. Confirm its ephemeral launch works once,
 fails on reuse, and does not ask for another Discord login. In Workspace
 Settings choose `#test-output` and one minute.
+
+Also run `/proposal` in the bot's DMs and confirm the resulting workspace
+switcher includes each configured mutual server and excludes inaccessible
+servers.
 
 1. Create one untyped proposal and one tagged **New member** proposal. Confirm
    their embeds contain the unchanged title, context, deadline, and zero

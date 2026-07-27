@@ -40,11 +40,13 @@ Google-signed OIDC token, and Cloud Run IAM rejects every other caller.
 
 ## Member experience
 
-`/proposal` returns an ephemeral **Open workspace** button for the current
-member and server. The launch code is 256 bits of randomness, stored only as a
-hash, consumed transactionally once, and expired after five minutes. It creates
-a Secure, HttpOnly, SameSite=Lax session cookie lasting seven days. Run
-`/proposal` once in another server to add it to the workspace switcher.
+`/proposal` returns a private **Open workspace** button. In a server, it opens
+that server directly; in the bot's DMs, it opens a workspace containing every
+configured mutual server the member can still access. The launch code is 256
+bits of randomness, stored only as a hash, consumed transactionally once, and
+expired after five minutes. It creates a Secure, HttpOnly, SameSite=Lax session
+cookie lasting seven days. Running `/proposal` in another server also adds that
+server to the workspace switcher.
 
 The workspace provides a responsive dashboard, retained history, proposal
 creation and preview, preferences, and proposal detail pages. Members with

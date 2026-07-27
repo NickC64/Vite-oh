@@ -193,6 +193,7 @@ class WorkspaceJob:
 class WorkspaceLaunch:
     user_id: str
     guild_id: str
+    guild_ids: tuple[str, ...]
     proposal_id: str | None
     created_at: datetime
     expires_at: datetime
@@ -200,9 +201,13 @@ class WorkspaceLaunch:
 
     @classmethod
     def from_document(cls, data: dict[str, Any]) -> "WorkspaceLaunch":
+        guild_id = str(data["guild_id"])
         return cls(
             user_id=str(data["user_id"]),
-            guild_id=str(data["guild_id"]),
+            guild_id=guild_id,
+            guild_ids=tuple(
+                str(item) for item in (data.get("guild_ids") or [guild_id])
+            ),
             proposal_id=(str(data["proposal_id"]) if data.get("proposal_id") else None),
             created_at=_utc(data["created_at"]),
             expires_at=_utc(data["expires_at"]),

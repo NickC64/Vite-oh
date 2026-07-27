@@ -5,9 +5,11 @@ from typing import Any, cast
 
 import httpx
 from fastapi import FastAPI, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from google.cloud import firestore
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from viteoh.config import Settings, get_settings
 from viteoh.discord_api import DiscordAPIError, DiscordClient
@@ -199,6 +201,58 @@ def create_app(
     else:
         assert workspace is not None
         application.include_router(workspace.router)
+
+        @application.exception_handler(StarletteHTTPException)
+        async def workspace_http_error(
+            request: Request, exc: StarletteHTTPException
+        ) -> Response:
+            if request.url.path.startswith("/static/"):
+                return JSONResponse(
+                    {"detail": str(exc.detail)}, status_code=exc.status_code
+                )
+            detail = (
+                str(exc.detail)
+                if isinstance(exc.detail, str)
+                else "The requested action could not be completed."
+            )
+            return workspace.error_response(request, exc.status_code, detail)
+
+        @application.exception_handler(RequestValidationError)
+        async def workspace_validation_error(
+            request: Request, exc: RequestValidationError
+        ) -> Response:
+            error = exc.errors()[0] if exc.errors() else {}
+            location = tuple(str(item) for item in error.get("loc", ()))
+            field = next(
+                (
+                    item.replace("_", " ")
+                    for item in reversed(location)
+                    if item not in {"body", "query", "path"}
+                ),
+                "",
+            )
+            message = str(error.get("msg") or "Check the information you entered.")
+            return workspace.error_response(
+                request,
+                422,
+                message.removeprefix("Value error, "),
+                field=field,
+            )
+
+        @application.exception_handler(Exception)
+        async def workspace_unexpected_error(
+            request: Request, exc: Exception
+        ) -> Response:
+            logging.getLogger(__name__).exception(
+                "Unhandled workspace request error",
+                extra={"path": request.url.path},
+            )
+            return workspace.error_response(
+                request,
+                500,
+                "Nothing was saved. Try again, and use the displayed reference "
+                "from any failed job if the problem continues.",
+            )
 
         application.mount(
             "/static",

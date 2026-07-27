@@ -1,43 +1,76 @@
 {% extends "base.html" %}
 {% from "icons.html" import icon %}
 {% block content %}
-<section class="page-heading"><div><span class="eyebrow">{{ guild_name }}</span><h1>Proposal types</h1><p>Types label proposals without changing their titles.</p></div></section>
-<section class="type-admin-grid">
-  {% for item in proposal_types %}
-  <article class="panel">
-    {% if item.builtin %}
-    <span class="eyebrow">Built in</span><h2>{{ item.name }}</h2><p>{{ item.description }}</p>
-    {% else %}
-    <form class="form-stack" method="post" action="/app/types">
-      <input type="hidden" name="csrf" value="{{ session.csrf }}">
-      <input type="hidden" name="guild_id" value="{{ guild_id }}">
-      <input type="hidden" name="type_id" value="{{ item.id }}">
-      <label>Name<input name="name" maxlength="50" required value="{{ item.name }}"></label>
-      <label>Description<input name="description" maxlength="100" required value="{{ item.description }}"></label>
-      <button type="submit">Save</button>
-    </form>
-    <button class="danger quiet" type="button" data-dialog-open="delete-type-{{ item.id }}">{{ icon("trash", 17) }}Delete</button>
-    <dialog class="confirm-dialog" id="delete-type-{{ item.id }}">
-      <div class="dialog-icon">{{ icon("trash", 22) }}</div>
-      <h2>Delete {{ item.name }}?</h2>
-      <p>Existing proposals keep this type label, but it cannot be chosen again.</p>
-      <form class="dialog-actions" method="post" action="/app/types/{{ item.id }}/delete">
-        <input type="hidden" name="csrf" value="{{ session.csrf }}">
-        <input type="hidden" name="guild_id" value="{{ guild_id }}">
-        <button type="button" data-dialog-close>Cancel</button>
-        <button class="danger" type="submit">Delete type</button>
-      </form>
-    </dialog>
-    {% endif %}
-  </article>
-  {% endfor %}
+<section class="page-heading">
+  <div>
+    <span class="eyebrow">{{ guild_name }}</span>
+    <h1>Proposal types</h1>
+    <p>Optional category labels that help members scan proposals. They never change the proposal form.</p>
+  </div>
+  <button class="primary" type="button" data-dialog-open="create-type-dialog">{{ icon("plus", 18) }}New type</button>
 </section>
-<form class="panel form-stack narrow" method="post" action="/app/types">
-  <h2>Create a custom type</h2>
-  <input type="hidden" name="csrf" value="{{ session.csrf }}">
-  <input type="hidden" name="guild_id" value="{{ guild_id }}">
-  <label>Name<input name="name" maxlength="50" required></label>
-  <label>Description<input name="description" maxlength="100" required></label>
-  <button class="primary" type="submit">Create type</button>
-</form>
+
+<section class="panel type-manager">
+  <div class="type-manager-heading">
+    <div><h2>Available types</h2><p>{{ custom_type_count }} of {{ max_custom_types }} custom types used</p></div>
+  </div>
+  <div class="type-list">
+    {% for item in proposal_types %}
+    <article class="type-row">
+      <span class="type-symbol">{{ icon("tags", 18) }}</span>
+      <div class="type-summary">
+        <div><strong>{{ item.name }}</strong>{% if item.builtin %}<span class="built-in-badge">Built in</span>{% endif %}</div>
+        <p>{{ item.description }}</p>
+      </div>
+      {% if not item.builtin %}
+      <div class="type-actions">
+        <button type="button" data-dialog-open="edit-type-{{ item.id }}">{{ icon("edit", 16) }}Edit</button>
+        <button class="danger quiet" type="button" data-dialog-open="delete-type-{{ item.id }}">{{ icon("trash", 16) }}Delete</button>
+      </div>
+      <dialog class="confirm-dialog form-dialog" id="edit-type-{{ item.id }}">
+        <h2>Edit {{ item.name }}</h2>
+        <p>The updated label applies only when creating future proposals.</p>
+        <form class="form-stack" method="post" action="/app/types">
+          <input type="hidden" name="csrf" value="{{ session.csrf }}">
+          <input type="hidden" name="guild_id" value="{{ guild_id }}">
+          <input type="hidden" name="type_id" value="{{ item.id }}">
+          <label>Name<input name="name" maxlength="50" required value="{{ item.name }}"></label>
+          <label>Description<input name="description" maxlength="100" required value="{{ item.description }}"></label>
+          <div class="dialog-actions">
+            <button type="button" data-dialog-close>Cancel</button>
+            <button class="primary" type="submit">Save changes</button>
+          </div>
+        </form>
+      </dialog>
+      <dialog class="confirm-dialog" id="delete-type-{{ item.id }}">
+        <div class="dialog-icon">{{ icon("trash", 22) }}</div>
+        <h2>Delete {{ item.name }}?</h2>
+        <p>Existing proposals keep this label, but members cannot select it again.</p>
+        <form class="dialog-actions" method="post" action="/app/types/{{ item.id }}/delete">
+          <input type="hidden" name="csrf" value="{{ session.csrf }}">
+          <input type="hidden" name="guild_id" value="{{ guild_id }}">
+          <button type="button" data-dialog-close>Cancel</button>
+          <button class="danger" type="submit">Delete type</button>
+        </form>
+      </dialog>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+</section>
+
+<dialog class="confirm-dialog form-dialog" id="create-type-dialog">
+  <h2>Create a proposal type</h2>
+  <p>Use a short category name members will recognize at a glance.</p>
+  <form class="form-stack" method="post" action="/app/types">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}">
+    <input type="hidden" name="guild_id" value="{{ guild_id }}">
+    <label>Name<input name="name" maxlength="50" required placeholder="Policy"></label>
+    <label>Description<input name="description" maxlength="100" required placeholder="Changes to server policy"></label>
+    <div class="dialog-actions">
+      <button type="button" data-dialog-close>Cancel</button>
+      <button class="primary" type="submit">Create type</button>
+    </div>
+  </form>
+</dialog>
 {% endblock %}

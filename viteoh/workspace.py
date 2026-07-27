@@ -12,6 +12,7 @@ from fastapi.templating import Jinja2Templates
 
 from viteoh.config import Settings
 from viteoh.domain import Proposal, ProposalStatus
+from viteoh.proposal_types import MAX_CUSTOM_TYPES
 from viteoh.repository import Repository
 from viteoh.tasks import TaskDispatcher
 from viteoh.workspace_client import WorkspaceWorkerClient, WorkspaceWorkerError
@@ -46,6 +47,7 @@ class Workspace:
         self.codec = SignedTokenCodec(settings.workspace_signing_secret)
         self.templates = Jinja2Templates(directory=WEB_ROOT / "templates")
         self.templates.env.filters["safe_markdown"] = safe_markdown
+        self.templates.env.globals["asset_version"] = settings.asset_version
         self.router = APIRouter()
         self._routes()
 
@@ -73,14 +75,22 @@ class Workspace:
             try:
                 launch_data = await self.worker.exchange_launch(code)
             except WorkspaceWorkerError as exc:
-                return self._error(request, str(exc), 401)
+                status = 401 if exc.status_code in {400, 401, 403, 404} else 503
+                return self._error(request, str(exc), status)
             existing = self._session(request)
             user_id = str(launch_data["user_id"])
             guild_id = str(launch_data["guild_id"])
+            launched_guilds = tuple(
+                str(item)
+                for item in launch_data.get("guild_ids") or [guild_id]
+                if str(item)
+            )
             existing_guilds = (
                 existing.guild_ids if existing and existing.user_id == user_id else ()
             )
-            guild_ids = tuple(dict.fromkeys((*existing_guilds, guild_id)))
+            guild_ids = tuple(
+                dict.fromkeys((*existing_guilds, *launched_guilds, guild_id))
+            )
             session = WorkspaceSession(
                 user_id=user_id,
                 display_name=str(launch_data.get("display_name") or "Discord member"),
@@ -440,6 +450,8 @@ class Workspace:
                     configs,
                     active_page="types",
                     proposal_types=types,
+                    max_custom_types=MAX_CUSTOM_TYPES,
+                    custom_type_count=sum(not item.builtin for item in types),
                 ),
             )
 
@@ -546,9 +558,16 @@ class Workspace:
         if not selected or selected not in session.guild_ids:
             raise HTTPException(403, "Open Vite-oh from this Discord server first.")
         access = await self._authorize(session, selected)
-        summaries = await self.worker.list_guild_summaries(
-            session.guild_ids, session.user_id
-        )
+        try:
+            summaries = await self.worker.list_guild_summaries(
+                session.guild_ids, session.user_id
+            )
+        except WorkspaceWorkerError:
+            logger.warning(
+                "Could not refresh workspace server list",
+                extra={"guild_id": selected},
+            )
+            summaries = []
         if not any(str(item.get("guild_id")) == selected for item in summaries):
             summaries.append(
                 {
@@ -579,7 +598,8 @@ class Workspace:
                 "Workspace authorization denied",
                 extra={"guild_id": guild_id},
             )
-            raise HTTPException(403, str(exc)) from exc
+            status = 503 if exc.status_code >= 500 else 403
+            raise HTTPException(status, str(exc)) from exc
         if not access.get("is_member"):
             logger.warning(
                 "Workspace authorization denied",
@@ -676,10 +696,38 @@ class Workspace:
             raise HTTPException(403, "You need Manage Server permission.")
 
     def _error(self, request: Request, message: str, status: int) -> Response:
+        return self.error_response(request, status, message)
+
+    def error_response(
+        self,
+        request: Request,
+        status: int,
+        message: str,
+        *,
+        field: str = "",
+    ) -> Response:
+        heading = {
+            400: "That request was not valid",
+            401: "Your workspace session has expired",
+            403: "You no longer have access",
+            404: "That item could not be found",
+            409: "That action conflicts with newer information",
+            422: "Check the information you entered",
+            503: "Discord is temporarily unavailable",
+        }.get(status, "The workspace hit a problem")
+        session = self._session(request)
         return self.templates.TemplateResponse(
             request,
             "error.html",
-            {"title": "Workspace unavailable", "session": None, "message": message},
+            {
+                "title": heading,
+                "session": None,
+                "status": status,
+                "heading": heading,
+                "message": message,
+                "field": field,
+                "has_session": session is not None,
+            },
             status_code=status,
         )
 

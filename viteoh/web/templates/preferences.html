@@ -4,8 +4,16 @@
 <form class="panel form-stack narrow settings-form" method="post" action="/app/preferences">
   <input type="hidden" name="csrf" value="{{ session.csrf }}">
   <input type="hidden" name="guild_id" value="{{ guild_id }}">
-  <label class="toggle"><input type="checkbox" name="new_proposals" {% if subscribed %}checked{% endif %}><span><strong>New proposal DMs</strong><small>Receive a private message whenever a proposal is created.</small></span></label>
-  <label class="toggle"><input type="checkbox" name="nudges" {% if nudges %}checked{% endif %}><span><strong>Anonymous nudges</strong><small>Allow members to privately draw your attention to a proposal.</small></span></label>
+  <label class="toggle">
+    <span class="toggle-copy"><strong>New proposal DMs</strong><small>Receive a private message whenever a proposal is created.</small></span>
+    <input class="switch-input" type="checkbox" name="new_proposals" {% if subscribed %}checked{% endif %}>
+    <span class="switch-control" aria-hidden="true"><span></span></span>
+  </label>
+  <label class="toggle">
+    <span class="toggle-copy"><strong>Anonymous nudges</strong><small>Allow members to privately draw your attention to a proposal.</small></span>
+    <input class="switch-input" type="checkbox" name="nudges" {% if nudges %}checked{% endif %}>
+    <span class="switch-control" aria-hidden="true"><span></span></span>
+  </label>
   <div><button class="primary" type="submit">Save preferences</button></div>
 </form>
 {% endblock %}

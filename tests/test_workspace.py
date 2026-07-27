@@ -26,7 +26,9 @@ class FakeWorkspaceWorker:
     async def exchange_launch(self, code: str) -> dict[str, Any]:
         guild_id = {"good": "guild", "second": "guild-2"}.get(code)
         if not guild_id or code in self.used:
-            raise WorkspaceWorkerError("This workspace link is invalid or used.")
+            raise WorkspaceWorkerError(
+                "This workspace link is invalid or used.", status_code=401
+            )
         self.used.add(code)
         return {
             "user_id": "admin",
@@ -267,6 +269,8 @@ def test_preferences_settings_types_jobs_and_security_headers() -> None:
 
         types = client.get("/app/types?guild=guild")
         assert "New member" in types.text
+        assert "New type" in types.text
+        assert "Delete type" not in types.text
         client.post(
             "/app/types",
             data={
@@ -277,6 +281,26 @@ def test_preferences_settings_types_jobs_and_security_headers() -> None:
             },
         )
         assert tasks.workspace[-1]["action"] == "type_save"
+        custom_type = asyncio.run(
+            repository.save_type(
+                "guild",
+                "custom-type",
+                "Policy",
+                "policy",
+                "Change a policy",
+                "admin",
+                utcnow(),
+            )
+        )
+        assert custom_type.proposal_type
+        types_with_custom = client.get("/app/types?guild=guild")
+        assert "Edit Policy" in types_with_custom.text
+        assert "Delete Policy?" in types_with_custom.text
+        client.post(
+            "/app/types/custom-type/delete",
+            data={"csrf": csrf(client), "guild_id": "guild"},
+        )
+        assert tasks.workspace[-1]["action"] == "type_delete"
 
         now = utcnow()
         asyncio.run(
@@ -306,7 +330,23 @@ def test_preferences_settings_types_jobs_and_security_headers() -> None:
         )
         assert bad_csrf.status_code == 403
         worker.admin = False
-        assert client.get("/app/settings?guild=guild").status_code == 403
+        forbidden = client.get("/app/settings?guild=guild")
+        assert forbidden.status_code == 403
+        assert "You no longer have access" in forbidden.text
+        assert "Manage Server" in forbidden.text
+
+        invalid = client.post(
+            "/app/settings",
+            data={
+                "csrf": csrf(client),
+                "guild_id": "guild",
+                "channel_id": "channel",
+                "duration_minutes": "not-a-number",
+            },
+        )
+        assert invalid.status_code == 422
+        assert "Check the information you entered" in invalid.text
+        assert "duration minutes" in invalid.text
 
 
 def test_navigation_theme_controls_and_dialogs_are_csp_safe() -> None:
@@ -317,6 +357,9 @@ def test_navigation_theme_controls_and_dialogs_are_csp_safe() -> None:
         assert 'aria-current="page"' in overview.text
         assert "data-theme-toggle" in overview.text
         assert "/static/theme.js" in overview.text
+        assert "?v=dev" in overview.text
+        assert "includeIndicatorStyles" in overview.text
+        assert "Vite-oh proposals" not in overview.text
 
         now = utcnow()
         result = asyncio.run(

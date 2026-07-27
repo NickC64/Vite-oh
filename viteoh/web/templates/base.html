@@ -6,11 +6,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#1e1f22" data-theme-color>
+  <meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
   <title>{{ title }} · Vite-oh</title>
-  <script src="/static/theme.js"></script>
-  <link rel="stylesheet" href="/static/workspace.css">
-  <script src="/static/htmx.min.js" defer></script>
-  <script src="/static/workspace.js" type="module"></script>
+  <script src="/static/theme.js?v={{ asset_version }}"></script>
+  <link rel="stylesheet" href="/static/workspace.css?v={{ asset_version }}">
+  <script src="/static/htmx.min.js?v={{ asset_version }}" defer></script>
+  <script src="/static/workspace.js?v={{ asset_version }}" type="module"></script>
 </head>
 <body class="{% if session %}workspace-authenticated{% endif %}">
   {% if session %}
@@ -34,10 +35,6 @@
 
   <div class="workspace-frame">
     <nav class="server-rail" aria-label="Servers">
-      <a class="viteoh-mark" href="/app?guild={{ guild_id }}" aria-label="Vite-oh proposals" title="Vite-oh">
-        <span>V</span>
-      </a>
-      <div class="rail-divider"></div>
       <div class="server-list">
         {% for item in guilds %}
         <a class="server-button{% if item.guild_id == guild_id %} selected{% endif %}" href="/app?guild={{ item.guild_id }}" aria-label="{{ item.guild_name }}" title="{{ item.guild_name }}" {% if item.guild_id == guild_id %}aria-current="page"{% endif %}>

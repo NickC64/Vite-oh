@@ -45,6 +45,12 @@ class FakeRepository:
             key=lambda item: item.guild_name.casefold(),
         )
 
+    async def list_all_guild_configs(self) -> list[GuildConfig]:
+        return sorted(
+            self.guilds.values(),
+            key=lambda item: item.guild_name.casefold(),
+        )
+
     async def set_guild_config(
         self,
         guild_id: str,
@@ -495,6 +501,7 @@ class FakeRepository:
         code_hash: str,
         user_id: str,
         guild_id: str,
+        guild_ids: list[str],
         proposal_id: str | None,
         now: datetime,
         ttl_seconds: int,
@@ -504,6 +511,7 @@ class FakeRepository:
         launch = WorkspaceLaunch(
             user_id=user_id,
             guild_id=guild_id,
+            guild_ids=tuple(dict.fromkeys(guild_ids)),
             proposal_id=proposal_id,
             created_at=now,
             expires_at=now + timedelta(seconds=ttl_seconds),

@@ -102,6 +102,8 @@ class InteractionProcessor:
     ) -> str | InteractionReply:
         path, options = command_path_and_options(payload.get("data") or {})
         if path == ("proposal",):
+            if not guild_id:
+                return await self._dm_workspace_reply(user_id)
             return await self._workspace_reply(user_id, guild_id)
         if path == ("proposal", "configure"):
             return await self._setup(payload, guild_id, user_id, options)
@@ -516,13 +518,23 @@ class InteractionProcessor:
         guild_id: str,
         *,
         proposal_id: str | None = None,
+        guild_ids: list[str] | None = None,
     ) -> InteractionReply:
+        available_guild_ids = list(
+            dict.fromkeys(guild_ids or ([guild_id] if guild_id else []))
+        )
+        if not guild_id or not available_guild_ids:
+            return InteractionReply(
+                "I could not find a configured server you can access. Add the bot "
+                "to a server, configure it there, then try `/proposal` again."
+            )
         code = secrets.token_urlsafe(32)
         code_hash = hashlib.sha256(code.encode()).hexdigest()
         await self.repository.create_workspace_launch(
             code_hash,
             user_id,
             guild_id,
+            available_guild_ids,
             proposal_id,
             utcnow(),
             self.settings.workspace_launch_ttl_seconds,
@@ -533,6 +545,41 @@ class InteractionProcessor:
             link_button("Open workspace", url),
         )
 
+    async def _dm_workspace_reply(self, user_id: str) -> InteractionReply:
+        guild_ids: list[str] = []
+        discord_unavailable = False
+        for config in await self.repository.list_all_guild_configs():
+            try:
+                await self.workspace_access(config.guild_id, user_id)
+            except DiscordAPIError as exc:
+                if exc.retryable:
+                    discord_unavailable = True
+                continue
+            guild_ids.append(config.guild_id)
+        if not guild_ids:
+            if discord_unavailable:
+                raise DiscordAPIError(
+                    503, "Discord membership lookup is temporarily unavailable."
+                )
+            return InteractionReply(
+                "I could not find any configured mutual servers. Run `/proposal` "
+                "inside a server first, or ask a server manager to configure Vite-oh."
+            )
+        reply = await self._workspace_reply(
+            user_id,
+            guild_ids[0],
+            guild_ids=guild_ids,
+        )
+        return InteractionReply(
+            (
+                "Open your private workspace to switch between "
+                f"{len(guild_ids)} available server"
+                f"{'s' if len(guild_ids) != 1 else ''}. "
+                "This link expires in five minutes and can be used once."
+            ),
+            reply.components,
+        )
+
     async def exchange_workspace_launch(self, code: str) -> dict[str, Any] | None:
         code_hash = hashlib.sha256(code.encode()).hexdigest()
         launch = await self.repository.consume_workspace_launch(code_hash, utcnow())
@@ -541,6 +588,7 @@ class InteractionProcessor:
         return {
             "user_id": launch.user_id,
             "guild_id": launch.guild_id,
+            "guild_ids": list(launch.guild_ids),
             "proposal_id": launch.proposal_id,
             "display_name": "Discord member",
         }

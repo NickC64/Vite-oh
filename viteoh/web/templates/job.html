@@ -11,8 +11,23 @@
     <a class="button" href="/app?guild={{ job.guild_id }}">Back to proposals</a>
   </div>
   {% else %}
-  <h1>That did not work</h1><p>{{ job.message }}</p>
-  <a class="button" href="/app?guild={{ job.guild_id }}">Return to the workspace</a>
+  <span class="error-code">Action failed</span>
+  <h1>That change was not saved</h1><p>{{ job.message }}</p>
+  <p class="job-reference">Reference: <code>{{ job.id[-8:] }}</code></p>
+  <div class="actions">
+    {% if job.action == "create" %}
+    <a class="button primary" href="/app/proposals/new?guild={{ job.guild_id }}">Review proposal</a>
+    {% elif job.action == "preferences" %}
+    <a class="button primary" href="/app/preferences?guild={{ job.guild_id }}">Review preferences</a>
+    {% elif job.action == "configure" %}
+    <a class="button primary" href="/app/settings?guild={{ job.guild_id }}">Review settings</a>
+    {% elif job.action in ["type_save", "type_delete"] %}
+    <a class="button primary" href="/app/types?guild={{ job.guild_id }}">Review proposal types</a>
+    {% elif job.action in ["archive", "restore", "purge"] %}
+    <a class="button primary" href="/app/archive?guild={{ job.guild_id }}">Return to archive</a>
+    {% endif %}
+    <a class="button" href="/app?guild={{ job.guild_id }}">Back to proposals</a>
+  </div>
   {% endif %}
 </section>
 {% endblock %}

@@ -724,11 +724,44 @@ async def test_workspace_launcher_is_private_one_time_and_contextual(
     assert first == {
         "user_id": "user",
         "guild_id": "guild",
+        "guild_ids": ["guild"],
         "proposal_id": None,
         "display_name": "Discord member",
     }
     assert await processor.exchange_workspace_launch(code) is None
     assert next(iter(repository.workspace_launches.values())).consumed_at
+
+
+async def test_dm_workspace_launcher_includes_every_configured_mutual_guild(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+) -> None:
+    processor, repository, _, discord = system
+    now = utcnow()
+    repository.guilds["guild-2"] = GuildConfig(
+        guild_id="guild-2",
+        guild_name="Second Guild",
+        output_channel_id="channel-2",
+        proposal_timeout_seconds=60,
+        configured_by="owner",
+        created_at=now,
+        updated_at=now,
+    )
+    await processor.process(
+        {
+            "id": "dm-open",
+            "type": 2,
+            "token": "token",
+            "user": {"id": "user"},
+            "data": {"name": "proposal"},
+        }
+    )
+    assert "2 available servers" in discord.responses[-1]
+    components = discord.response_components[-1]
+    assert components
+    url = str(components[0]["components"][0]["url"])  # type: ignore[index]
+    launch = await processor.exchange_workspace_launch(url.split("code=", 1)[1])
+    assert launch
+    assert launch["guild_ids"] == ["guild-2", "guild"]
 
 
 async def test_workspace_jobs_reuse_durable_proposal_and_preference_logic(

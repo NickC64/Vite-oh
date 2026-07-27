@@ -51,12 +51,33 @@ class InteractionReceiver:
             return 400, {"detail": "invalid JSON"}
         if payload.get("type") == 1:
             return 200, {"type": 1}
-        if not payload.get("guild_id") or not (
-            (payload.get("member") or {}).get("user")
-        ):
-            return 200, _message("This bot can only be used inside a server.")
-
         data = payload.get("data") or {}
+        guild_user = (payload.get("member") or {}).get("user")
+        direct_user = payload.get("user")
+        if not guild_user and not direct_user:
+            return 200, _message(
+                "Discord did not include your member identity. Reopen the command "
+                "and try again."
+            )
+        if not payload.get("guild_id"):
+            is_launcher = (
+                payload.get("type") == 2 and str(data.get("name", "")) == "proposal"
+            )
+            if not is_launcher:
+                return 200, _message(
+                    "Only `/proposal` can be used in a DM. Proposal actions remain "
+                    "attached to their server messages."
+                )
+            try:
+                await self.tasks.enqueue_interaction(payload)
+            except Exception:
+                logger.exception("Could not enqueue DM workspace launch")
+                return 200, _message(
+                    "I could not prepare your workspace link. Wait a moment and "
+                    "run `/proposal` again."
+                )
+            return 200, {"type": 5}
+
         if payload.get("type") == 4:
             return 200, await self._autocomplete(payload)
         if payload.get("type") == 2:

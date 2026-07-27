@@ -10,7 +10,9 @@ from viteoh.config import Settings
 
 
 class WorkspaceWorkerError(RuntimeError):
-    pass
+    def __init__(self, message: str, status_code: int = 503) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class WorkspaceWorkerClient:
@@ -88,7 +90,7 @@ class WorkspaceWorkerClient:
                 message = str(response.json().get("detail") or message)
             except ValueError:
                 pass
-            raise WorkspaceWorkerError(message)
+            raise WorkspaceWorkerError(message, response.status_code)
         result = response.json()
         if not isinstance(result, dict):
             raise WorkspaceWorkerError("The worker returned an invalid response.")

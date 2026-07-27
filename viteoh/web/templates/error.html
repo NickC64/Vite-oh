@@ -1,9 +1,14 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="panel narrow">
-  <span class="eyebrow">Workspace unavailable</span>
-  <h1>This link could not be opened.</h1>
+<section class="panel narrow error-panel">
+  <span class="error-code">Error {{ status }}</span>
+  <h1>{{ heading }}</h1>
   <p>{{ message }}</p>
-  <p>Return to Discord and run <code>/proposal</code> for a fresh private link.</p>
+  {% if field %}<p class="field-error">Review the <strong>{{ field }}</strong> field and submit again.</p>{% endif %}
+  <div class="actions">
+    {% if has_session %}<a class="button primary" href="/app">Return to workspace</a>{% endif %}
+    <button type="button" data-history-back>Go back</button>
+    {% if status == 401 %}<p>Run <code>/proposal</code> in Discord or in the bot's DMs for a fresh private link.</p>{% endif %}
+  </div>
 </section>
 {% endblock %}
