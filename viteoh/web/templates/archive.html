@@ -14,7 +14,8 @@
     <span class="status {{ proposal.status.value }}">{{ proposal.status.value }}</span>
     <strong>{{ proposal.title }}</strong>
     <span class="history-type">{% if proposal.type_name %}{{ proposal.type_name }}{% else %}No type{% endif %}</span>
-    <time>{{ proposal.archived_at.strftime("%Y-%m-%d") if proposal.archived_at else proposal.created_at.strftime("%Y-%m-%d") }}</time>
+    {% set archive_date = proposal.archived_at if proposal.archived_at else proposal.created_at %}
+    <time datetime="{{ archive_date.isoformat() }}" data-local-datetime="date">{{ archive_date.strftime("%Y-%m-%d") }}</time>
     {{ icon("chevron", 16) }}
   </a>
   {% else %}

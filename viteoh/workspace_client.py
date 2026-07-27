@@ -70,6 +70,25 @@ class WorkspaceWorkerClient:
         )
         return [dict(item) for item in summaries]
 
+    async def search_members(
+        self, guild_id: str, user_id: str, query: str
+    ) -> list[dict[str, str]]:
+        result = await self._post(
+            "/internal/workspace/members",
+            {"guild_id": guild_id, "user_id": user_id, "query": query},
+        )
+        raw = result.get("members")
+        if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
+            raise WorkspaceWorkerError("The worker returned invalid member data.")
+        return [
+            {
+                "user_id": str(item.get("user_id") or ""),
+                "display_name": str(item.get("display_name") or "Discord member"),
+            }
+            for item in raw[:8]
+            if item.get("user_id")
+        ]
+
     async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         headers: dict[str, str] = {}
         if self.settings.google_cloud_project:

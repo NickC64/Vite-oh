@@ -29,7 +29,7 @@
       <strong>{{ proposal.title }}</strong>
       {% if proposal.context %}<span class="proposal-context-preview">{{ proposal.context }}</span>{% endif %}
       <span class="proposal-meta">
-        <span>Passes <time data-relative="{{ proposal.deadline_at.isoformat() }}">{{ proposal.deadline_at.strftime("%b %-d at %-I:%M %p") }}</time></span>
+        <span>Passes <time datetime="{{ proposal.deadline_at.isoformat() }}" data-relative="{{ proposal.deadline_at.isoformat() }}">{{ proposal.deadline_at.strftime("%b %-d at %-I:%M %p UTC") }}</time></span>
         <span>{{ proposal.acknowledgement_count }} acknowledged</span>
       </span>
     </a>
@@ -50,7 +50,7 @@
       <span class="status {{ proposal.status.value }}">{{ proposal.status.value }}</span>
       <strong>{{ proposal.title }}</strong>
       <span class="history-type">{% if proposal.type_name %}{{ proposal.type_name }}{% else %}No type{% endif %}</span>
-      <time>{{ proposal.created_at.strftime("%Y-%m-%d") }}</time>
+      <time datetime="{{ proposal.created_at.isoformat() }}" data-local-datetime="date">{{ proposal.created_at.strftime("%Y-%m-%d") }}</time>
       {{ icon("chevron", 16) }}
     </a>
     {% else %}

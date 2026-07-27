@@ -3,13 +3,14 @@ import socket
 import threading
 import time
 from collections.abc import Iterator
+from datetime import timedelta
 
 import pytest
 import uvicorn
 from playwright.sync_api import Browser, Page, expect, sync_playwright
 
 from tests.test_workspace import web_system
-from viteoh.domain import GuildConfig, ProposalType, utcnow
+from viteoh.domain import GuildConfig, Proposal, ProposalStatus, ProposalType, utcnow
 
 
 @pytest.fixture
@@ -36,6 +37,21 @@ def workspace_url() -> Iterator[str]:
         created_at=now,
         updated_at=now,
     )
+    proposal = Proposal(
+        id=repository.next_id,
+        guild_id="guild",
+        guild_name="Test Guild",
+        output_channel_id="channel",
+        title="Browser proposal",
+        normalized_title="browser proposal",
+        context="Visible browser-test context.",
+        reservation_id="browser-proposal",
+        status=ProposalStatus.ACTIVE,
+        created_at=now,
+        deadline_at=now + timedelta(hours=1),
+        message_id="browser-message",
+    )
+    repository.proposals[proposal.id] = proposal
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -126,6 +142,20 @@ def test_workspace_server_rail_theme_and_mobile_drawer(
         page.get_by_role("dialog").get_by_role("heading", name="Delete Policy?")
     ).to_be_visible()
     page.get_by_role("button", name="Cancel").click()
+    page.get_by_role("link", name="Overview").click()
+    page.get_by_role("link", name="Browser proposal").click()
+    expect(page.get_by_role("link", name="Back to proposals")).to_be_visible()
+    expect(page.locator("[data-local-datetime=long]")).not_to_contain_text("UTC")
+    page.get_by_role("button", name="Nudge member").click()
+    nudge_dialog = page.locator("#nudge-proposal-dialog")
+    expect(nudge_dialog).to_be_visible()
+    nudge_dialog.locator("[data-member-search]").fill("ta")
+    expect(nudge_dialog.get_by_role("button", name="Target Member")).to_be_visible()
+    nudge_dialog.get_by_role("button", name="Target Member").click()
+    expect(
+        nudge_dialog.get_by_role("button", name="Send anonymous nudge")
+    ).to_be_enabled()
+    nudge_dialog.get_by_role("button", name="Cancel").click()
     rendered_time = page.evaluate(
         """() => {
           const container = document.createElement("div");

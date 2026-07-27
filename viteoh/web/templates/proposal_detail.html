@@ -1,6 +1,9 @@
 {% extends "base.html" %}
 {% from "icons.html" import icon %}
 {% block content %}
+<a class="back-link" href="{% if proposal.archived %}/app/archive?guild={{ guild_id }}{% else %}/app?guild={{ guild_id }}{% endif %}">
+  {{ icon("arrow-left", 18) }}{% if proposal.archived %}Back to archive{% else %}Back to proposals{% endif %}
+</a>
 <section class="proposal-detail">
   {% if proposal.archived %}<span class="archived-label">{{ icon("archive", 15) }}Archived</span>{% endif %}
   {% if proposal.type_name %}<span class="type-tag">{{ proposal.type_name }}</span>{% endif %}
@@ -8,12 +11,14 @@
   {% if proposal.context %}<div class="context markdown">{{ proposal.context|safe_markdown }}</div>{% endif %}
   <div class="detail-grid">
     <div><span>Status</span><strong class="status {{ proposal.status.value }}">{{ proposal.status.value }}</strong></div>
-    <div><span>Deadline</span><strong>{{ proposal.deadline_at.strftime("%b %-d, %Y at %-I:%M %p UTC") }}</strong></div>
-    <div><span>Acknowledged</span><strong>{{ proposal.acknowledgement_count }} members</strong></div>
+    <div><span>Deadline</span><strong><time datetime="{{ proposal.deadline_at.isoformat() }}" data-local-datetime="long">{{ proposal.deadline_at.strftime("%b %-d, %Y at %-I:%M %p UTC") }}</time></strong></div>
+    <div><span>Acknowledged</span><strong id="acknowledgement-count">{{ proposal.acknowledgement_count }} members</strong></div>
   </div>
   {% if proposal.veto_reason %}
   <section class="reason"><h2>Anonymous veto reason</h2><div class="markdown">{{ proposal.veto_reason|safe_markdown }}</div></section>
   {% endif %}
+  {% include "proposal_actions.html" %}
+  <div class="proposal-action-result-slot"><div id="proposal-action-result" aria-live="polite"></div></div>
   <div class="actions">
     <a class="button primary" href="{{ discord_url }}" rel="noreferrer">{{ icon("external", 18) }}Open in Discord</a>
     {% if can_manage and proposal.status.value == "active" %}

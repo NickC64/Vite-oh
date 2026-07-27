@@ -198,6 +198,33 @@ def create_app(
                 str(body.get("user_id", "")),
             )
             return JSONResponse(result)
+
+        @application.post("/internal/workspace/members")
+        async def workspace_members(request: Request) -> JSONResponse:
+            active_processor = processor or resources["processor"]
+            body = await request.json()
+            try:
+                result = await active_processor.workspace_member_search(
+                    str(body.get("guild_id", "")),
+                    str(body.get("user_id", "")),
+                    str(body.get("query", "")),
+                )
+            except DiscordAPIError as exc:
+                if exc.retryable:
+                    return JSONResponse(
+                        {"detail": "Discord is temporarily unavailable."},
+                        status_code=503,
+                    )
+                return JSONResponse(
+                    {
+                        "detail": (
+                            "Member search is unavailable. Confirm that the "
+                            "Server Members Intent is enabled for Vite-oh."
+                        )
+                    },
+                    status_code=503,
+                )
+            return JSONResponse(result)
     else:
         assert workspace is not None
         application.include_router(workspace.router)

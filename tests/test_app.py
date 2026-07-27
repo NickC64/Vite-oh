@@ -61,6 +61,18 @@ class StubProcessor:
             ]
         }
 
+    async def workspace_member_search(
+        self, guild_id: str, user_id: str, query: str
+    ) -> dict[str, object]:
+        return {
+            "members": [
+                {
+                    "user_id": "target",
+                    "display_name": f"{query} in {guild_id} for {user_id}",
+                }
+            ]
+        }
+
 
 def test_receiver_app_routes() -> None:
     app = create_app(
@@ -112,5 +124,12 @@ def test_worker_app_routes() -> None:
                 json={"guild_ids": ["guild"], "user_id": "user"},
             ).json()["guilds"][0]["guild_id"]
             == "guild"
+        )
+        assert (
+            client.post(
+                "/internal/workspace/members",
+                json={"guild_id": "guild", "user_id": "user", "query": "tar"},
+            ).json()["members"][0]["user_id"]
+            == "target"
         )
         assert client.post("/interactions").status_code == 404

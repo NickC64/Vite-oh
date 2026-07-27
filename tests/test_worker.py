@@ -804,6 +804,61 @@ async def test_workspace_jobs_reuse_durable_proposal_and_preference_logic(
     assert not await repository.get_nudges_enabled("guild", "user")
 
 
+async def test_workspace_member_actions_share_discord_safety_rules(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+) -> None:
+    processor, repository, _, discord = system
+    await processor.process(command("new", value="Website actions"))
+    proposal = next(iter(repository.proposals.values()))
+
+    async def run(job_id: str, action: str, data: dict[str, object]) -> None:
+        await processor.process_workspace(
+            {
+                "id": job_id,
+                "action": action,
+                "actor_user_id": "user",
+                "guild_id": "guild",
+                "data": {"proposal_id": proposal.id, **data},
+            }
+        )
+        assert repository.workspace_jobs[job_id].status == "succeeded"
+
+    await run("web-ack", "acknowledge", {})
+    assert repository.proposals[proposal.id].acknowledgement_count == 1
+    await run("web-ack-repeat", "acknowledge", {})
+    assert repository.proposals[proposal.id].acknowledgement_count == 1
+    await run("web-sub", "subscription", {"enabled": True})
+    assert await repository.get_proposal_subscription(proposal.id, "user")
+    await run("web-unsub", "subscription", {"enabled": False})
+    assert not await repository.get_proposal_subscription(proposal.id, "user")
+    await run("web-nudge", "nudge", {"target_user_id": "target"})
+    assert repository.nudges[proposal.id]["target"] == "delivered"
+    assert discord.dms[-1][0] == "target"
+    await run("web-veto", "veto", {"reason": "Please revise the plan."})
+    terminal = repository.proposals[proposal.id]
+    assert terminal.status is ProposalStatus.VETOED
+    assert terminal.veto_reason == "Please revise the plan."
+    assert "user" not in repr(terminal)
+
+
+async def test_workspace_member_search_is_small_private_and_live(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+) -> None:
+    processor, _, _, discord = system
+    discord.members[("guild", "ada")] = {
+        "nick": "Ada Lovelace",
+        "user": {"id": "ada", "username": "adal", "bot": False},
+    }
+    discord.members[("guild", "user")] = {
+        "user": {"id": "user", "username": "user", "bot": False}
+    }
+    assert await processor.workspace_member_search("guild", "user", "a") == {
+        "members": []
+    }
+    result = await processor.workspace_member_search("guild", "user", "ada")
+    assert result == {"members": [{"user_id": "ada", "display_name": "Ada Lovelace"}]}
+
+
 async def test_workspace_admin_jobs_validate_permission_and_types(
     system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
 ) -> None:

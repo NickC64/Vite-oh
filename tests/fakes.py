@@ -377,6 +377,9 @@ class FakeRepository:
             self.proposals[proposal_id] = updated
             return ProposalActionResult(updated, True, "acknowledged")
 
+    async def has_acknowledged(self, proposal_id: str, user_id: str) -> bool:
+        return user_id in self.acknowledgements.get(proposal_id, set())
+
     async def reserve_nudge(
         self, proposal_id: str, target_user_id: str, now: datetime
     ) -> ProposalActionResult:
@@ -435,10 +438,21 @@ class FakeRepository:
         return sorted(self.guild_users.get(guild_id, set()))
 
     async def add_proposal_subscription(self, proposal_id: str, user_id: str) -> bool:
+        return await self.set_proposal_subscription(proposal_id, user_id, True)
+
+    async def set_proposal_subscription(
+        self, proposal_id: str, user_id: str, enabled: bool
+    ) -> bool:
         users = self.subscribers.setdefault(proposal_id, set())
-        before = len(users)
-        users.add(user_id)
-        return len(users) != before
+        was_enabled = user_id in users
+        if enabled:
+            users.add(user_id)
+        else:
+            users.discard(user_id)
+        return was_enabled != enabled
+
+    async def get_proposal_subscription(self, proposal_id: str, user_id: str) -> bool:
+        return user_id in self.subscribers.get(proposal_id, set())
 
     async def proposal_subscribers(self, proposal_id: str) -> list[str]:
         return sorted(self.subscribers.get(proposal_id, set()))
@@ -620,6 +634,23 @@ class FakeDiscord:
         if not member:
             raise DiscordAPIError(404, "member not found")
         return member
+
+    async def search_guild_members(
+        self, guild_id: str, query: str, *, limit: int = 8
+    ) -> list[dict[str, object]]:
+        normalized = query.casefold()
+        return [
+            member
+            for (member_guild, _), member in self.members.items()
+            if member_guild == guild_id
+            and isinstance(member.get("user"), dict)
+            and normalized
+            in str(
+                (member.get("user") or {}).get("global_name")
+                or (member.get("user") or {}).get("username")
+                or (member.get("user") or {}).get("id")
+            ).casefold()
+        ][:limit]
 
     async def get_workspace_access(
         self, guild_id: str, user_id: str

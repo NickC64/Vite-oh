@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import logging
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -250,6 +251,18 @@ class DiscordClient:
         if not isinstance(result, dict):
             raise DiscordAPIError(502, "Discord did not return the guild member.")
         return result
+
+    async def search_guild_members(
+        self, guild_id: str, query: str, *, limit: int = 8
+    ) -> list[dict[str, Any]]:
+        result = await self._request(
+            "GET",
+            f"/guilds/{guild_id}/members/search?"
+            f"{urlencode({'query': query, 'limit': min(limit, 8)})}",
+        )
+        if not isinstance(result, list):
+            raise DiscordAPIError(502, "Discord did not return guild members.")
+        return [member for member in result if isinstance(member, dict)][:8]
 
     async def get_workspace_access(self, guild_id: str, user_id: str) -> dict[str, Any]:
         guild = await self._request("GET", f"/guilds/{guild_id}")

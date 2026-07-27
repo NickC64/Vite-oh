@@ -51,11 +51,15 @@ cookie lasting seven days. Running `/proposal` in another server also adds that
 server to the workspace switcher.
 
 The workspace provides a responsive dashboard, retained history, proposal
-creation and preview, preferences, and proposal detail pages. Members with
-Manage Server permission (or the owner override) also see server settings,
-administrative deletion, and management for up to 20 custom proposal types.
-Pages and mutations revalidate live guild membership and Discord permissions
-through the private worker.
+creation and preview, preferences, and proposal detail pages. Proposal details
+mirror the Discord **Veto**, **Acknowledge**, **Subscribe**, and **Nudge**
+actions, so members may use either interface without losing the same
+authorization, anonymity, fixed-deadline, and idempotency guarantees. Dates are
+formatted by the member's browser in its detected locale and time zone.
+Members with Manage Server permission (or the owner override) also see server
+settings, administrative deletion, and management for up to 20 custom proposal
+types. Pages and mutations revalidate live guild membership and Discord
+permissions through the private worker.
 
 Active proposal messages provide **Veto**, **Acknowledge**, **Subscribe**,
 **Nudge**, and **Open workspace** buttons. Nudge opens an ephemeral Discord
@@ -170,12 +174,15 @@ Terraform state, or GitHub.
 5. Stop the old Gateway/WebSocket process.
 6. Install the same application in each server with the `bot` and
    `applications.commands` scopes.
-7. Run `/proposal` in the test server, open **Settings**, choose the test
+7. In the Developer Portal's **Bot** page, enable **Server Members Intent**.
+   The HTTP-only bot does not open a Gateway connection; the intent permits the
+   workspace's conservative, prefix-only member search for anonymous nudges.
+8. Run `/proposal` in the test server, open **Settings**, choose the test
    channel, and set one minute. Repeat in the live server with 2,880 minutes.
-8. Smoke-test the workspace with an untyped proposal, the built-in New member
-   type, and a custom type, plus preferences, the Discord Nudge picker,
-   acknowledgement, an anonymous veto reason, terminal replies, and deletion
-   independently in both servers.
+9. Smoke-test the workspace with an untyped proposal, the built-in New member
+   type, and a custom type, plus preferences, website and Discord nudges,
+   acknowledgement, subscriptions, an anonymous veto reason, terminal replies,
+   and deletion independently in both servers.
 
 This schema intentionally has no compatibility layer for the earlier pilot data.
 Before deploying it, delete the disposable Firestore test documents so the new

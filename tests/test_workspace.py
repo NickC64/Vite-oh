@@ -68,6 +68,16 @@ class FakeWorkspaceWorker:
             for guild_id in guild_ids
         ]
 
+    async def search_members(
+        self, guild_id: str, user_id: str, query: str
+    ) -> list[dict[str, str]]:
+        if query == "fail":
+            raise WorkspaceWorkerError("Member search is temporarily unavailable.")
+        return [
+            {"user_id": "target", "display_name": "Target Member"},
+            {"user_id": "second", "display_name": "Second Member"},
+        ]
+
 
 def web_system(
     *, secure_cookies: bool = False
@@ -191,6 +201,9 @@ def test_launch_dashboard_create_and_detail_flow() -> None:
         detail = client.get(f"/app/proposals/{result.proposal.id}?guild=guild")
         assert detail.status_code == 200
         assert "Quiet hours" in detail.text
+        assert "Back to proposals" in detail.text
+        assert "Member actions" in detail.text
+        assert 'data-local-datetime="long"' in detail.text
         delete = client.post(
             f"/app/proposals/{result.proposal.id}/delete",
             data={"csrf": csrf(client), "guild_id": "guild"},
@@ -198,6 +211,95 @@ def test_launch_dashboard_create_and_detail_flow() -> None:
         )
         assert delete.status_code == 303
         assert tasks.workspace[-1]["action"] == "delete"
+
+
+def test_member_actions_enqueue_durable_jobs_and_search_conservatively() -> None:
+    client, repository, tasks, _ = web_system()
+    now = utcnow()
+    result = asyncio.run(
+        repository.create_proposal(
+            "actions",
+            "guild",
+            "Test Guild",
+            "channel",
+            "Action test",
+            "action test",
+            "",
+            "",
+            "",
+            now,
+            now + timedelta(minutes=5),
+        )
+    )
+    assert result.proposal
+    proposal_id = result.proposal.id
+    with client:
+        login(client)
+        common = {"csrf": csrf(client), "guild_id": "guild"}
+        cases = [
+            ("acknowledge", "acknowledge", {}),
+            ("subscription", "subscription", {"enabled": "true"}),
+            ("nudge", "nudge", {"target_user_id": "target"}),
+            ("veto", "veto", {"reason": "Needs a rollback plan."}),
+        ]
+        for path, expected, extra in cases:
+            response = client.post(
+                f"/app/proposals/{proposal_id}/{path}",
+                data={**common, **extra},
+                headers={"HX-Request": "true"},
+            )
+            assert response.status_code == 200
+            assert "Saving" in response.text
+            assert tasks.workspace[-1]["action"] == expected
+            assert tasks.workspace[-1]["data"]["proposal_id"] == proposal_id
+
+        assert client.get("/app/guilds/guild/members?q=t").json() == {"members": []}
+        search = client.get("/app/guilds/guild/members?q=ta")
+        assert search.json()["members"][0]["display_name"] == "Target Member"
+
+
+def test_inline_action_job_returns_feedback_and_updated_controls() -> None:
+    client, repository, _, _ = web_system()
+    now = utcnow()
+    result = asyncio.run(
+        repository.create_proposal(
+            "feedback",
+            "guild",
+            "Test Guild",
+            "channel",
+            "Feedback",
+            "feedback",
+            "",
+            "",
+            "",
+            now,
+            now + timedelta(minutes=5),
+        )
+    )
+    assert result.proposal
+    asyncio.run(
+        repository.set_workspace_job(
+            "job",
+            "guild",
+            SignedTokenCodec("secret").fingerprint("admin"),
+            "subscription",
+            "succeeded",
+            "Subscribed to proposal updates.",
+            result.proposal.id,
+            now,
+            86400,
+        )
+    )
+    asyncio.run(repository.set_proposal_subscription(result.proposal.id, "admin", True))
+    with client:
+        login(client)
+        response = client.get(
+            f"/app/jobs/job?guild=guild&proposal={result.proposal.id}&inline=true"
+        )
+        assert response.status_code == 200
+        assert "Subscribed to proposal updates." in response.text
+        assert "Unsubscribe" in response.text
+        assert 'hx-swap-oob="outerHTML"' in response.text
 
 
 def test_production_session_cookie_is_secure_http_only_and_same_site() -> None:

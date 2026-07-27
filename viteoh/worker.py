@@ -394,6 +394,8 @@ class InteractionProcessor:
         proposal = await self._active_proposal(guild_id, proposal_id)
         if not proposal:
             return "Select a valid active proposal from this server."
+        if not target_user_id:
+            return "Choose a server member to nudge."
         if target_user_id == user_id:
             return "You cannot nudge yourself."
         try:
@@ -630,6 +632,36 @@ class InteractionProcessor:
         summaries.sort(key=lambda item: str(item["guild_name"]).casefold())
         return {"guilds": summaries}
 
+    async def workspace_member_search(
+        self, guild_id: str, user_id: str, query: str
+    ) -> dict[str, Any]:
+        query = " ".join(query.split())
+        if not 2 <= len(query) <= 32:
+            return {"members": []}
+        await self.workspace_access(guild_id, user_id)
+        members = await self.discord.search_guild_members(guild_id, query, limit=8)
+        results: list[dict[str, str]] = []
+        for member in members:
+            user = member.get("user")
+            if not isinstance(user, dict) or bool(user.get("bot")):
+                continue
+            member_user_id = str(user.get("id") or "")
+            if not member_user_id or member_user_id == user_id:
+                continue
+            display_name = str(
+                member.get("nick")
+                or user.get("global_name")
+                or user.get("username")
+                or "Discord member"
+            )
+            results.append(
+                {
+                    "user_id": member_user_id,
+                    "display_name": display_name[:80],
+                }
+            )
+        return {"members": results}
+
     async def process_workspace(self, payload: dict[str, Any]) -> None:
         job_id = str(payload.get("id", ""))
         guild_id = str(payload.get("guild_id", ""))
@@ -733,6 +765,65 @@ class InteractionProcessor:
                 guild_id, user_id, bool(data.get("nudges"))
             )
             return "Your preferences were saved.", None
+        if action in {"acknowledge", "subscription", "nudge", "veto"}:
+            proposal_id = str(data.get("proposal_id") or "")
+            proposal = await self.repository.get_proposal(proposal_id)
+            if not proposal or proposal.guild_id != guild_id:
+                raise ValueError("That proposal no longer exists.")
+            if proposal.output_channel_id not in visible_channels:
+                raise PermissionError("You cannot view that proposal's channel.")
+            if proposal.status is not ProposalStatus.ACTIVE:
+                if (
+                    action == "veto"
+                    and proposal.status is ProposalStatus.VETOED
+                    and retrying
+                ):
+                    return "The proposal was vetoed anonymously.", proposal.id
+                raise ValueError("This proposal is no longer active.")
+            if action == "acknowledge":
+                acknowledgement = await self.repository.acknowledge(
+                    proposal.id, user_id, utcnow()
+                )
+                if acknowledgement.reason == "already_acknowledged":
+                    await self._sync_announcement(proposal.id)
+                    return "You already acknowledged this proposal.", proposal.id
+                if not acknowledgement.changed:
+                    raise ValueError("This proposal is no longer active.")
+                await self._sync_announcement(proposal.id)
+                return (
+                    "Acknowledged. This records only that you saw the proposal.",
+                    proposal.id,
+                )
+            if action == "subscription":
+                enabled = bool(data.get("enabled"))
+                await self.repository.set_proposal_subscription(
+                    proposal.id, user_id, enabled
+                )
+                return (
+                    "Subscribed to proposal updates."
+                    if enabled
+                    else "Unsubscribed from proposal updates.",
+                    proposal.id,
+                )
+            if action == "nudge":
+                message = await self._nudge(
+                    guild_id,
+                    user_id,
+                    proposal.id,
+                    str(data.get("target_user_id") or ""),
+                )
+                if message.startswith("Nudge sent") or (
+                    retrying and "already been nudged" in message
+                ):
+                    return message, proposal.id
+                raise ValueError(message)
+            reason = str(data.get("reason") or "").strip()
+            if len(reason) > 500:
+                raise ValueError("A veto reason cannot exceed 500 characters.")
+            message = await self._veto(proposal, reason)
+            if not message.startswith("You have vetoed"):
+                raise ValueError(message)
+            return "The proposal was vetoed anonymously.", proposal.id
         if not is_admin:
             raise PermissionError("You need Manage Server permission.")
         if action == "configure":

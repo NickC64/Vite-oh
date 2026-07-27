@@ -1,13 +1,14 @@
 import hashlib
 import logging
 import secrets
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from viteoh.config import Settings
@@ -49,6 +50,7 @@ class Workspace:
         self.templates.env.filters["safe_markdown"] = safe_markdown
         self.templates.env.globals["asset_version"] = settings.asset_version
         self.router = APIRouter()
+        self._member_search_times: dict[tuple[str, str], float] = {}
         self._routes()
 
     async def close(self) -> None:
@@ -274,6 +276,7 @@ class Workspace:
                 access["visible_channel_ids"]
             ):
                 raise HTTPException(404, "Proposal not found.")
+            action_context = await self._proposal_action_context(session, proposal)
             return self.templates.TemplateResponse(
                 request,
                 "proposal_detail.html",
@@ -283,10 +286,103 @@ class Workspace:
                     access,
                     configs,
                     active_page="archive" if proposal.archived else "overview",
-                    proposal=proposal,
-                    discord_url=_proposal_link(proposal),
+                    **action_context,
                 ),
             )
+
+        @router.post("/app/proposals/{proposal_id}/acknowledge")
+        async def acknowledge_proposal(
+            request: Request,
+            proposal_id: str,
+            guild_id: str = Form(...),
+            csrf: str = Form(...),
+        ) -> Response:
+            return await self._proposal_action(
+                request,
+                proposal_id,
+                guild_id,
+                csrf,
+                "acknowledge",
+                {},
+            )
+
+        @router.post("/app/proposals/{proposal_id}/subscription")
+        async def subscribe_to_proposal(
+            request: Request,
+            proposal_id: str,
+            guild_id: str = Form(...),
+            csrf: str = Form(...),
+            enabled: str = Form(...),
+        ) -> Response:
+            return await self._proposal_action(
+                request,
+                proposal_id,
+                guild_id,
+                csrf,
+                "subscription",
+                {"enabled": enabled == "true"},
+            )
+
+        @router.post("/app/proposals/{proposal_id}/nudge")
+        async def nudge_about_proposal(
+            request: Request,
+            proposal_id: str,
+            guild_id: str = Form(...),
+            csrf: str = Form(...),
+            target_user_id: str = Form(...),
+        ) -> Response:
+            return await self._proposal_action(
+                request,
+                proposal_id,
+                guild_id,
+                csrf,
+                "nudge",
+                {"target_user_id": target_user_id},
+            )
+
+        @router.post("/app/proposals/{proposal_id}/veto")
+        async def veto_proposal(
+            request: Request,
+            proposal_id: str,
+            guild_id: str = Form(...),
+            csrf: str = Form(...),
+            reason: str = Form(""),
+        ) -> Response:
+            reason = reason.strip()
+            if len(reason) > 500:
+                raise HTTPException(422, "A veto reason cannot exceed 500 characters.")
+            return await self._proposal_action(
+                request,
+                proposal_id,
+                guild_id,
+                csrf,
+                "veto",
+                {"reason": reason},
+            )
+
+        @router.get("/app/guilds/{guild_id}/members")
+        async def search_members(
+            request: Request, guild_id: str, q: str = ""
+        ) -> JSONResponse:
+            session = self._require_session(request)
+            await self._authorize(session, guild_id)
+            query = " ".join(q.split())
+            if not 2 <= len(query) <= 32:
+                return JSONResponse({"members": []})
+            throttle_key = (session.user_id, guild_id)
+            now = time.monotonic()
+            if now - self._member_search_times.get(throttle_key, 0.0) < 0.2:
+                return JSONResponse(
+                    {"detail": "Search a little more slowly."}, status_code=429
+                )
+            self._member_search_times[throttle_key] = now
+            try:
+                members = await self.worker.search_members(
+                    guild_id, session.user_id, query
+                )
+            except WorkspaceWorkerError as exc:
+                return JSONResponse({"detail": str(exc)}, status_code=exc.status_code)
+            return JSONResponse({"members": members})
 
         @router.post("/app/proposals/{proposal_id}/delete")
         async def delete_proposal(
@@ -496,7 +592,11 @@ class Workspace:
 
         @router.get("/app/jobs/{job_id}", response_class=HTMLResponse)
         async def job_status(
-            request: Request, job_id: str, guild: str = ""
+            request: Request,
+            job_id: str,
+            guild: str = "",
+            inline: bool = False,
+            proposal: str = "",
         ) -> Response:
             session = self._require_session(request)
             job = await self.repository.get_workspace_job(job_id)
@@ -517,16 +617,48 @@ class Workspace:
                 and job.action == "create"
                 and job.proposal_id
             ):
-                proposal = await self.repository.get_proposal(job.proposal_id)
+                created_proposal = await self.repository.get_proposal(job.proposal_id)
                 visible_channels = {
                     str(item) for item in access.get("visible_channel_ids") or []
                 }
                 if (
-                    proposal
-                    and proposal.guild_id == guild_id
-                    and proposal.output_channel_id in visible_channels
+                    created_proposal
+                    and created_proposal.guild_id == guild_id
+                    and created_proposal.output_channel_id in visible_channels
                 ):
-                    result_proposal = proposal
+                    result_proposal = created_proposal
+            if inline:
+                action_proposal_id = (
+                    job.proposal_id if job and job.proposal_id else proposal
+                )
+                action_context: dict[str, Any] = {}
+                if (
+                    job
+                    and job.status == "succeeded"
+                    and action_proposal_id
+                    and job.action in {"acknowledge", "subscription", "nudge", "veto"}
+                ):
+                    updated = await self.repository.get_proposal(action_proposal_id)
+                    if updated and updated.guild_id == guild_id:
+                        action_context = await self._proposal_action_context(
+                            session, updated
+                        )
+                return self.templates.TemplateResponse(
+                    request,
+                    "proposal_action_job.html",
+                    {
+                        "status": status,
+                        "job": job,
+                        "job_id": job_id,
+                        "guild_id": guild_id,
+                        "proposal_id": action_proposal_id,
+                        "session": session,
+                        "refresh_page": bool(
+                            job and job.status == "succeeded" and job.action == "veto"
+                        ),
+                        **action_context,
+                    },
+                )
             return self.templates.TemplateResponse(
                 request,
                 "job.html",
@@ -542,6 +674,71 @@ class Workspace:
                     result_proposal=result_proposal,
                 ),
             )
+
+    async def _proposal_action(
+        self,
+        request: Request,
+        proposal_id: str,
+        guild_id: str,
+        csrf: str,
+        action: str,
+        data: dict[str, Any],
+    ) -> Response:
+        session = self._require_session(request)
+        self._check_csrf(session, csrf)
+        await self._authorize(session, guild_id)
+        proposal = await self.repository.get_proposal(proposal_id)
+        if not proposal or proposal.guild_id != guild_id or proposal.archived:
+            raise HTTPException(404, "Proposal not found.")
+        payload = {"proposal_id": proposal_id, **data}
+        job_id = secrets.token_hex(16)
+        await self.tasks.enqueue_workspace(
+            {
+                "id": job_id,
+                "action": action,
+                "actor_user_id": session.user_id,
+                "guild_id": guild_id,
+                "requester_hash": self.codec.fingerprint(session.user_id),
+                "data": payload,
+            }
+        )
+        if request.headers.get("HX-Request") == "true":
+            return self.templates.TemplateResponse(
+                request,
+                "proposal_action_job.html",
+                {
+                    "status": "queued",
+                    "job": None,
+                    "job_id": job_id,
+                    "guild_id": guild_id,
+                    "proposal_id": proposal_id,
+                    "session": session,
+                    "refresh_page": False,
+                },
+            )
+        return RedirectResponse(
+            (f"/app/jobs/{job_id}?guild={guild_id}&proposal={proposal_id}"),
+            status_code=303,
+        )
+
+    async def _proposal_action_context(
+        self, session: WorkspaceSession, proposal: Proposal
+    ) -> dict[str, Any]:
+        acknowledged = False
+        subscribed = False
+        if proposal.status is ProposalStatus.ACTIVE and not proposal.archived:
+            acknowledged = await self.repository.has_acknowledged(
+                proposal.id, session.user_id
+            )
+            subscribed = await self.repository.get_proposal_subscription(
+                proposal.id, session.user_id
+            )
+        return {
+            "proposal": proposal,
+            "acknowledged": acknowledged,
+            "proposal_subscribed": subscribed,
+            "discord_url": _proposal_link(proposal),
+        }
 
     async def _enqueue(
         self,

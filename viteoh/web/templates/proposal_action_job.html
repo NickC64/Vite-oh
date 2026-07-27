@@ -1,0 +1,19 @@
+<div class="proposal-action-result {{ status }}" id="proposal-action-result"
+  {% if status in ["queued", "processing"] %}
+  hx-get="/app/jobs/{{ job.id if job else job_id }}?guild={{ guild_id }}&proposal={{ proposal_id }}&inline=true"
+  hx-trigger="every 750ms" hx-swap="outerHTML"
+  {% endif %} role="status" aria-live="polite">
+  {% if status in ["queued", "processing"] %}
+  <span class="spinner small" aria-hidden="true"></span><span>Saving…</span>
+  {% elif status == "succeeded" %}
+  <strong>{{ job.message }}</strong>
+  {% else %}
+  <strong>That action was not completed.</strong><span>{{ job.message }}</span>
+  {% endif %}
+</div>
+{% if status == "succeeded" and proposal %}
+{% set action_oob = true %}
+{% include "proposal_actions.html" %}
+<strong id="acknowledgement-count" hx-swap-oob="outerHTML">{{ proposal.acknowledgement_count }} members</strong>
+{% endif %}
+{% if refresh_page %}<span data-refresh-page hidden></span>{% endif %}

@@ -145,6 +145,8 @@ class Repository(Protocol):
         self, proposal_id: str, user_id: str, now: datetime
     ) -> ProposalActionResult: ...
 
+    async def has_acknowledged(self, proposal_id: str, user_id: str) -> bool: ...
+
     async def reserve_nudge(
         self, proposal_id: str, target_user_id: str, now: datetime
     ) -> ProposalActionResult: ...
@@ -168,6 +170,14 @@ class Repository(Protocol):
     async def guild_subscribers(self, guild_id: str) -> Sequence[str]: ...
 
     async def add_proposal_subscription(
+        self, proposal_id: str, user_id: str
+    ) -> bool: ...
+
+    async def set_proposal_subscription(
+        self, proposal_id: str, user_id: str, enabled: bool
+    ) -> bool: ...
+
+    async def get_proposal_subscription(
         self, proposal_id: str, user_id: str
     ) -> bool: ...
 
@@ -824,6 +834,16 @@ class FirestoreRepository:
 
         return await acknowledge_in_transaction(transaction)
 
+    async def has_acknowledged(self, proposal_id: str, user_id: str) -> bool:
+        snapshot = await (
+            self.client.collection("proposals")
+            .document(proposal_id)
+            .collection("acknowledgements")
+            .document(user_id)
+            .get()
+        )
+        return bool(snapshot.exists)
+
     async def reserve_nudge(
         self, proposal_id: str, target_user_id: str, now: datetime
     ) -> ProposalActionResult:
@@ -961,6 +981,11 @@ class FirestoreRepository:
         return [snapshot.id async for snapshot in query.stream()]
 
     async def add_proposal_subscription(self, proposal_id: str, user_id: str) -> bool:
+        return await self.set_proposal_subscription(proposal_id, user_id, True)
+
+    async def set_proposal_subscription(
+        self, proposal_id: str, user_id: str, enabled: bool
+    ) -> bool:
         ref = (
             self.client.collection("proposals")
             .document(proposal_id)
@@ -968,10 +993,24 @@ class FirestoreRepository:
             .document(user_id)
         )
         snapshot = await ref.get()
-        if snapshot.exists:
-            return False
-        await ref.create({"created_at": firestore.SERVER_TIMESTAMP})
-        return True
+        was_enabled = bool(snapshot.exists)
+        if not enabled:
+            if snapshot.exists:
+                await ref.delete()
+            return was_enabled
+        if not snapshot.exists:
+            await ref.set({"created_at": firestore.SERVER_TIMESTAMP}, merge=True)
+        return not was_enabled
+
+    async def get_proposal_subscription(self, proposal_id: str, user_id: str) -> bool:
+        snapshot = await (
+            self.client.collection("proposals")
+            .document(proposal_id)
+            .collection("subscribers")
+            .document(user_id)
+            .get()
+        )
+        return bool(snapshot.exists)
 
     async def proposal_subscribers(self, proposal_id: str) -> Sequence[str]:
         query = (

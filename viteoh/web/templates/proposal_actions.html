@@ -1,0 +1,74 @@
+{% from "icons.html" import icon %}
+<section class="proposal-member-actions" id="proposal-actions" {% if action_oob %}hx-swap-oob="outerHTML"{% endif %}>
+  <div class="section-heading">
+    <div><h2>Member actions</h2><p>These are private unless a veto reason is supplied.</p></div>
+  </div>
+  {% if proposal.status.value == "active" and not proposal.archived %}
+  <div class="member-action-row">
+    <form method="post" action="/app/proposals/{{ proposal.id }}/acknowledge"
+      hx-post="/app/proposals/{{ proposal.id }}/acknowledge"
+      hx-target="#proposal-action-result" hx-swap="outerHTML" hx-disabled-elt="button">
+      <input type="hidden" name="csrf" value="{{ session.csrf }}">
+      <input type="hidden" name="guild_id" value="{{ guild_id }}">
+      <button type="submit" {% if acknowledged %}disabled{% endif %}>
+        {{ icon("eye", 18) }}{% if acknowledged %}Acknowledged{% else %}Acknowledge{% endif %}
+      </button>
+    </form>
+    <form method="post" action="/app/proposals/{{ proposal.id }}/subscription"
+      hx-post="/app/proposals/{{ proposal.id }}/subscription"
+      hx-target="#proposal-action-result" hx-swap="outerHTML" hx-disabled-elt="button">
+      <input type="hidden" name="csrf" value="{{ session.csrf }}">
+      <input type="hidden" name="guild_id" value="{{ guild_id }}">
+      <input type="hidden" name="enabled" value="{{ 'false' if proposal_subscribed else 'true' }}">
+      <button type="submit">{{ icon("bell", 18) }}{% if proposal_subscribed %}Unsubscribe{% else %}Subscribe{% endif %}</button>
+    </form>
+    <button type="button" data-dialog-open="nudge-proposal-dialog">{{ icon("send", 18) }}Nudge member</button>
+    <button class="danger" type="button" data-dialog-open="veto-proposal-dialog">{{ icon("x", 18) }}Veto</button>
+  </div>
+  <p class="action-explanation">Acknowledging means only “I saw this.” It does not express support or prevent a later veto.</p>
+
+  <dialog class="confirm-dialog form-dialog" id="nudge-proposal-dialog">
+    <h2>Nudge a member anonymously</h2>
+    <p>Search by the beginning of a username or server nickname. Vite-oh returns at most eight matches and does not retain searches.</p>
+    <form class="form-stack" method="post" action="/app/proposals/{{ proposal.id }}/nudge"
+      hx-post="/app/proposals/{{ proposal.id }}/nudge"
+      hx-target="#proposal-action-result" hx-swap="outerHTML" hx-disabled-elt="button">
+      <input type="hidden" name="csrf" value="{{ session.csrf }}">
+      <input type="hidden" name="guild_id" value="{{ guild_id }}">
+      <input type="hidden" name="target_user_id" required data-member-id>
+      <label>
+        Find a member
+        <input type="search" autocomplete="off" minlength="2" maxlength="32"
+          placeholder="Start typing a name"
+          data-member-search data-guild-id="{{ guild_id }}">
+      </label>
+      <div class="member-search-status" data-member-search-status aria-live="polite">Enter at least two characters.</div>
+      <div class="member-search-results" data-member-search-results></div>
+      <div class="selected-member" data-selected-member hidden></div>
+      <div class="dialog-actions">
+        <button type="button" data-dialog-close>Cancel</button>
+        <button class="primary" type="submit" disabled data-nudge-submit>Send anonymous nudge</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="confirm-dialog form-dialog" id="veto-proposal-dialog">
+    <div class="dialog-icon danger-icon">{{ icon("x", 22) }}</div>
+    <h2>Veto this proposal anonymously?</h2>
+    <p>Your identity is never stored or shown. A supplied reason is public and immutable.</p>
+    <form class="form-stack" method="post" action="/app/proposals/{{ proposal.id }}/veto"
+      hx-post="/app/proposals/{{ proposal.id }}/veto"
+      hx-target="#proposal-action-result" hx-swap="outerHTML" hx-disabled-elt="button">
+      <input type="hidden" name="csrf" value="{{ session.csrf }}">
+      <input type="hidden" name="guild_id" value="{{ guild_id }}">
+      <label>Optional public reason<textarea name="reason" maxlength="500" rows="4"></textarea></label>
+      <div class="dialog-actions">
+        <button type="button" data-dialog-close>Cancel</button>
+        <button class="danger" type="submit">Veto anonymously</button>
+      </div>
+    </form>
+  </dialog>
+  {% else %}
+  <p class="action-explanation">This proposal is resolved. Member actions are no longer available.</p>
+  {% endif %}
+</section>

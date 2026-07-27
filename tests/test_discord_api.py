@@ -133,6 +133,28 @@ async def test_discord_error_classifies_retryability() -> None:
     await client.close()
 
 
+async def test_search_guild_members_uses_bounded_prefix_query() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json=[{"user": {"id": "target", "username": "target"}}],
+        )
+
+    client = DiscordClient(
+        Settings(discord_api_base_url="https://discord.test/api/v10"),
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    result = await client.search_guild_members("guild", "tar get", limit=99)
+    assert result[0]["user"]["id"] == "target"
+    assert requests[0].url.path.endswith("/guilds/guild/members/search")
+    assert requests[0].url.params["query"] == "tar get"
+    assert requests[0].url.params["limit"] == "8"
+    await client.close()
+
+
 async def test_validate_output_channel_checks_guild_type_and_permissions() -> None:
     required = VIEW_CHANNEL | SEND_MESSAGES | EMBED_LINKS | READ_MESSAGE_HISTORY
 
