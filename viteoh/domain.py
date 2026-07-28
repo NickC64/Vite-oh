@@ -3,6 +3,9 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+MIN_PROPOSAL_DURATION_MINUTES = 1
+MAX_PROPOSAL_DURATION_MINUTES = 10080
+
 
 class ProposalStatus(StrEnum):
     ACTIVE = "active"

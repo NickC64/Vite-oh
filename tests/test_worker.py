@@ -804,6 +804,53 @@ async def test_workspace_jobs_reuse_durable_proposal_and_preference_logic(
     assert not await repository.get_nudges_enabled("guild", "user")
 
 
+async def test_workspace_creation_may_extend_but_never_shorten_deadline(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    processor, repository, _, _ = system
+    now = utcnow()
+    monkeypatch.setattr("viteoh.worker.utcnow", lambda: now)
+    await processor.process_workspace(
+        {
+            "id": "extended",
+            "action": "create",
+            "actor_user_id": "user",
+            "guild_id": "guild",
+            "data": {
+                "title": "Extended review",
+                "context": "",
+                "type_id": "",
+                "duration_minutes": 120,
+            },
+        }
+    )
+    job = repository.workspace_jobs["extended"]
+    assert job.status == "succeeded"
+    assert job.proposal_id
+    assert repository.proposals[job.proposal_id].deadline_at == now + timedelta(
+        minutes=120
+    )
+
+    await processor.process_workspace(
+        {
+            "id": "shortened",
+            "action": "create",
+            "actor_user_id": "user",
+            "guild_id": "guild",
+            "data": {
+                "title": "Short review",
+                "context": "",
+                "type_id": "",
+                "duration_minutes": 0,
+            },
+        }
+    )
+    failed = repository.workspace_jobs["shortened"]
+    assert failed.status == "failed"
+    assert "server minimum" in failed.message
+
+
 async def test_workspace_member_actions_share_discord_safety_rules(
     system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
 ) -> None:

@@ -213,6 +213,54 @@ def test_launch_dashboard_create_and_detail_flow() -> None:
         assert tasks.workspace[-1]["action"] == "delete"
 
 
+def test_proposal_duration_can_extend_but_not_shorten_server_baseline() -> None:
+    client, _, tasks, _ = web_system()
+    with client:
+        login(client)
+        form = client.get("/app/proposals/new?guild=guild")
+        assert 'min="1"' in form.text
+        assert 'max="10080"' in form.text
+        assert "You may extend this" in form.text
+
+        token = csrf(client)
+        response = client.post(
+            "/app/proposals",
+            data={
+                "csrf": token,
+                "guild_id": "guild",
+                "title": "Longer review",
+                "duration_minutes": "120",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert tasks.workspace[-1]["data"]["duration_minutes"] == 120
+
+        too_short = client.post(
+            "/app/proposals",
+            data={
+                "csrf": token,
+                "guild_id": "guild",
+                "title": "Too short",
+                "duration_minutes": "0",
+            },
+        )
+        assert too_short.status_code == 422
+        assert "cannot be shorter" in too_short.text
+
+        too_long = client.post(
+            "/app/proposals",
+            data={
+                "csrf": token,
+                "guild_id": "guild",
+                "title": "Too long",
+                "duration_minutes": "10081",
+            },
+        )
+        assert too_long.status_code == 422
+        assert "10,080" in too_long.text
+
+
 def test_member_actions_enqueue_durable_jobs_and_search_conservatively() -> None:
     client, repository, tasks, _ = web_system()
     now = utcnow()

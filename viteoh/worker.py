@@ -12,6 +12,8 @@ from viteoh.components import link_button, modal_values, parse_component_id
 from viteoh.config import Settings
 from viteoh.discord_api import DiscordAPIError, DiscordClient
 from viteoh.domain import (
+    MAX_PROPOSAL_DURATION_MINUTES,
+    MIN_PROPOSAL_DURATION_MINUTES,
     GuildConfig,
     Proposal,
     ProposalStatus,
@@ -28,8 +30,6 @@ CURRENT_RENDER_VERSION = 1
 
 ADMINISTRATOR = 1 << 3
 MANAGE_GUILD = 1 << 5
-MIN_DURATION_MINUTES = 1
-MAX_DURATION_MINUTES = 10080
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,7 +270,11 @@ class InteractionProcessor:
             duration_minutes = current.proposal_timeout_seconds // 60
         else:
             duration_minutes = int(duration_value)
-        if not MIN_DURATION_MINUTES <= duration_minutes <= MAX_DURATION_MINUTES:
+        if not (
+            MIN_PROPOSAL_DURATION_MINUTES
+            <= duration_minutes
+            <= MAX_PROPOSAL_DURATION_MINUTES
+        ):
             return "Voting duration must be between 1 and 10,080 minutes."
 
         guild_name = current.guild_name if current else guild_id
@@ -300,6 +304,7 @@ class InteractionProcessor:
         context: str,
         proposal_type: ProposalType | None,
         config: GuildConfig,
+        duration_minutes: int | None = None,
     ) -> str:
         title = " ".join(title.split())
         context = context.strip()
@@ -309,8 +314,17 @@ class InteractionProcessor:
             return str(exc)
         if len(context) > 1000:
             return "Proposal context cannot exceed 1,000 characters."
+        baseline_minutes = config.proposal_timeout_seconds // 60
+        selected_minutes = (
+            baseline_minutes if duration_minutes is None else duration_minutes
+        )
+        if not (baseline_minutes <= selected_minutes <= MAX_PROPOSAL_DURATION_MINUTES):
+            return (
+                "Voting duration must be between the server minimum of "
+                f"{baseline_minutes:,} minutes and 10,080 minutes."
+            )
         now = utcnow()
-        deadline = now + timedelta(seconds=config.proposal_timeout_seconds)
+        deadline = now + timedelta(minutes=selected_minutes)
         result = await self.repository.create_proposal(
             interaction_id,
             config.guild_id,
@@ -744,12 +758,30 @@ class InteractionProcessor:
             )
             if type_id and not proposal_type:
                 raise ValueError("That proposal type no longer exists.")
+            baseline_minutes = config.proposal_timeout_seconds // 60
+            try:
+                submitted_duration = data.get("duration_minutes")
+                duration_minutes = (
+                    baseline_minutes
+                    if submitted_duration is None or submitted_duration == ""
+                    else int(submitted_duration)
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Choose a valid voting duration.") from exc
+            if not (
+                baseline_minutes <= duration_minutes <= MAX_PROPOSAL_DURATION_MINUTES
+            ):
+                raise ValueError(
+                    "Voting duration cannot be shorter than the server minimum "
+                    f"of {baseline_minutes:,} minutes or longer than 10,080 minutes."
+                )
             message = await self._new(
                 f"web:{job_id}",
                 str(data.get("title", "")),
                 str(data.get("context", "")),
                 proposal_type,
                 config,
+                duration_minutes,
             )
             proposal = await self.repository.get_proposal_for_interaction(
                 f"web:{job_id}"
@@ -829,7 +861,11 @@ class InteractionProcessor:
         if action == "configure":
             channel_id = str(data.get("channel_id", ""))
             duration_minutes = int(data.get("duration_minutes", 0))
-            if not MIN_DURATION_MINUTES <= duration_minutes <= MAX_DURATION_MINUTES:
+            if not (
+                MIN_PROPOSAL_DURATION_MINUTES
+                <= duration_minutes
+                <= MAX_PROPOSAL_DURATION_MINUTES
+            ):
                 raise ValueError("Duration must be between 1 and 10,080 minutes.")
             ready_channels = {
                 str(channel["id"])

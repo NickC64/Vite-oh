@@ -57,7 +57,11 @@ servers.
 13. Change the browser time zone and confirm proposal deadlines and history
     dates render in that time zone. Confirm the detail-page back link returns to
     the overview or management archive as appropriate.
-14. Delete a proposal from its administrative web page and confirm the gray canonical
+14. Create a proposal using the server's baseline duration, then another with a
+    longer duration. Confirm shorter-than-baseline and longer-than-seven-day
+    submissions are rejected, and later server configuration changes move
+    neither stored deadline.
+15. Delete a proposal from its administrative web page and confirm the gray canonical
     embed, and single moderator-deletion outcome reply.
 
 Open `/proposal` in the live guild and configure `#live-output` for 2,880

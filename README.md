@@ -61,6 +61,11 @@ settings, administrative deletion, and management for up to 20 custom proposal
 types. Pages and mutations revalidate live guild membership and Discord
 permissions through the private worker.
 
+Each server's configured voting duration is a minimum. A creator may keep an
+individual proposal open longer, up to seven days, but cannot shorten the
+server baseline. The selected duration becomes the proposal's immutable
+absolute deadline.
+
 Active proposal messages provide **Veto**, **Acknowledge**, **Subscribe**,
 **Nudge**, and **Open workspace** buttons. Nudge opens an ephemeral Discord
 member picker. Terminal messages retain only **Open workspace**.

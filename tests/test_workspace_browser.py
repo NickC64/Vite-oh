@@ -115,6 +115,16 @@ def test_workspace_server_rail_theme_and_mobile_drawer(
     page.get_by_role("link", name="History archive").click()
     expect(page.get_by_role("heading", name="History archive")).to_be_visible()
     page.get_by_role("link", name="Overview").click()
+    page.get_by_label("Workspace navigation").get_by_role(
+        "link", name="Create proposal"
+    ).click()
+    duration = page.get_by_role("spinbutton", name="Voting duration")
+    duration.fill("120")
+    expect(page.locator("[data-duration-summary]")).to_have_text("Selected: 2 hours.")
+    expect(page.locator("[data-preview-deadline]")).to_have_text(
+        "Fixed 2 hours after creation"
+    )
+    page.get_by_role("link", name="Overview").click()
     page.get_by_role("link", name="Preferences").click()
     switch = page.locator(".switch-control").first
     assert switch.evaluate(

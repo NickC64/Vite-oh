@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.templating import Jinja2Templates
 
 from viteoh.config import Settings
-from viteoh.domain import Proposal, ProposalStatus
+from viteoh.domain import MAX_PROPOSAL_DURATION_MINUTES, Proposal, ProposalStatus
 from viteoh.proposal_types import MAX_CUSTOM_TYPES
 from viteoh.repository import Repository
 from viteoh.tasks import TaskDispatcher
@@ -177,6 +177,7 @@ class Workspace:
                     f"/app/settings?guild={guild_id}", status_code=303
                 )
             types = await self.repository.list_types(guild_id)
+            baseline_minutes = config.proposal_timeout_seconds // 60
             return self.templates.TemplateResponse(
                 request,
                 "proposal_form.html",
@@ -187,6 +188,10 @@ class Workspace:
                     configs,
                     active_page="create",
                     config=config,
+                    baseline_minutes=baseline_minutes,
+                    baseline_duration=_format_duration(baseline_minutes),
+                    maximum_duration=_format_duration(MAX_PROPOSAL_DURATION_MINUTES),
+                    maximum_duration_minutes=MAX_PROPOSAL_DURATION_MINUTES,
                     proposal_types=types,
                 ),
             )
@@ -239,6 +244,7 @@ class Workspace:
             title: str = Form(...),
             proposal_type: str = Form(""),
             context: str = Form(""),
+            duration_minutes: str = Form(""),
         ) -> Response:
             session = self._require_session(request)
             self._check_csrf(session, csrf)
@@ -249,6 +255,23 @@ class Workspace:
                 raise HTTPException(422, "Titles must contain 1 to 100 characters.")
             if len(context) > 1000:
                 raise HTTPException(422, "Context cannot exceed 1,000 characters.")
+            config = await self.repository.get_guild_config(guild_id)
+            if not config:
+                raise HTTPException(409, "This server must be configured first.")
+            baseline_minutes = config.proposal_timeout_seconds // 60
+            try:
+                selected_duration = int(duration_minutes or baseline_minutes)
+            except ValueError as exc:
+                raise HTTPException(422, "Choose a valid voting duration.") from exc
+            if not (
+                baseline_minutes <= selected_duration <= MAX_PROPOSAL_DURATION_MINUTES
+            ):
+                raise HTTPException(
+                    422,
+                    "Voting duration cannot be shorter than the server minimum "
+                    f"of {baseline_minutes:,} minutes or longer than "
+                    f"{MAX_PROPOSAL_DURATION_MINUTES:,} minutes.",
+                )
             return await self._enqueue(
                 session,
                 guild_id,
@@ -257,6 +280,7 @@ class Workspace:
                     "title": title,
                     "context": context,
                     "type_id": proposal_type.strip(),
+                    "duration_minutes": selected_duration,
                 },
             )
 
@@ -952,6 +976,18 @@ def _proposal_link(proposal: Proposal) -> str:
         f"https://discord.com/channels/{proposal.guild_id}/"
         f"{proposal.output_channel_id}/{proposal.message_id}"
     )
+
+
+def _format_duration(minutes: int) -> str:
+    for unit_minutes, singular in (
+        (10080, "week"),
+        (1440, "day"),
+        (60, "hour"),
+    ):
+        if minutes >= unit_minutes and minutes % unit_minutes == 0:
+            amount = minutes // unit_minutes
+            return f"{amount:,} {singular}{'' if amount == 1 else 's'}"
+    return f"{minutes:,} minute{'' if minutes == 1 else 's'}"
 
 
 def _guild_view(item: dict[str, Any]) -> dict[str, Any]:

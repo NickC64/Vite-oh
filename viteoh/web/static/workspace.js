@@ -100,7 +100,24 @@ if (form) {
   const previewTitle = document.querySelector("[data-preview-title]");
   const previewContext = document.querySelector("[data-preview-context]");
   const previewType = document.querySelector("[data-preview-type]");
+  const duration = form.querySelector("[data-duration]");
+  const durationSummary = form.querySelector("[data-duration-summary]");
+  const previewDeadline = document.querySelector("[data-preview-deadline]");
   const count = document.querySelector("[data-title-count]");
+  const formatDuration = (minutes) => {
+    const units = [
+      [10080, "week"],
+      [1440, "day"],
+      [60, "hour"],
+    ];
+    for (const [unitMinutes, name] of units) {
+      if (minutes >= unitMinutes && minutes % unitMinutes === 0) {
+        const amount = minutes / unitMinutes;
+        return `${amount.toLocaleString()} ${name}${amount === 1 ? "" : "s"}`;
+      }
+    }
+    return `${minutes.toLocaleString()} minute${minutes === 1 ? "" : "s"}`;
+  };
   const update = () => {
     previewTitle.textContent = title.value.trim() || "Your proposal title";
     previewContext.textContent =
@@ -110,6 +127,12 @@ if (form) {
     const hasType = Boolean(selected?.value);
     previewType.textContent = hasType ? `Type · ${selected.textContent}` : "";
     previewType.hidden = !hasType;
+    const durationMinutes = Number(duration.value);
+    if (Number.isInteger(durationMinutes) && durationMinutes > 0) {
+      const label = formatDuration(durationMinutes);
+      durationSummary.textContent = `Selected: ${label}.`;
+      previewDeadline.textContent = `Fixed ${label} after creation`;
+    }
   };
   form.addEventListener("input", update);
   update();
