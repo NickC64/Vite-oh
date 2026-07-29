@@ -96,7 +96,7 @@ class DiscordClient:
         )
 
     async def create_proposal_announcement(self, proposal: Proposal) -> str:
-        nonce = _nonce(f"created:{proposal.id}")
+        nonce = _canonical_nonce(proposal.id)
         result = await self._request(
             "POST",
             f"/channels/{proposal.output_channel_id}/messages",
@@ -143,7 +143,7 @@ class DiscordClient:
                 "embeds": [embed],
                 "components": components,
                 "allowed_mentions": {"parse": []},
-                "nonce": _nonce(f"{proposal.status}:{proposal.id}"),
+                "nonce": _canonical_nonce(proposal.id),
                 "enforce_nonce": True,
             },
         )
@@ -368,6 +368,10 @@ class DiscordClient:
 
 def _nonce(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()[:25]
+
+
+def _canonical_nonce(proposal_id: str) -> str:
+    return _nonce(f"canonical:{proposal_id}")
 
 
 def _guild_icon_hash(value: object) -> str:

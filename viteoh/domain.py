@@ -119,8 +119,14 @@ class Proposal:
             guild_id=data["guild_id"],
             guild_name=data["guild_name"],
             output_channel_id=data["output_channel_id"],
-            title=data["title"],
-            normalized_title=data["normalized_title"],
+            title=str(
+                data.get("title") or data.get("display_name") or "Untitled proposal"
+            ),
+            normalized_title=str(
+                data.get("normalized_title")
+                or data.get("normalized_name")
+                or "untitled proposal"
+            ),
             context=data.get("context", ""),
             reservation_id=data["reservation_id"],
             status=ProposalStatus(data["status"]),

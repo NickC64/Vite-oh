@@ -61,6 +61,13 @@ async def test_discord_announcement_edit_response_and_dm() -> None:
     assert body["embeds"][0]["color"] == 0x5865F2
     assert body["embeds"][0]["title"] == "Alice"
     assert body["embeds"][0]["author"]["name"] == "Proposal"
+    created_nonce = body["nonce"]
+    assert (
+        await client.sync_proposal_announcement(replace(proposal(), message_id=None))
+        == "message"
+    )
+    raced_sync_body = json.loads(requests[-1].content)
+    assert raced_sync_body["nonce"] == created_nonce
     await client.create_proposal_announcement(
         replace(
             proposal(),
