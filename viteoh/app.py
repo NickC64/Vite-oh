@@ -225,6 +225,25 @@ def create_app(
                     status_code=503,
                 )
             return JSONResponse(result)
+
+        @application.post("/internal/workspace/proposal-capabilities")
+        async def workspace_proposal_capabilities(request: Request) -> JSONResponse:
+            active_processor = processor or resources["processor"]
+            body = await request.json()
+            try:
+                result = await active_processor.workspace_proposal_capabilities(
+                    str(body.get("guild_id", "")),
+                    str(body.get("user_id", "")),
+                    str(body.get("proposal_id", "")),
+                )
+            except PermissionError as exc:
+                return JSONResponse({"detail": str(exc)}, status_code=403)
+            except DiscordAPIError as exc:
+                return JSONResponse(
+                    {"detail": "Discord is temporarily unavailable."},
+                    status_code=503 if exc.retryable else 403,
+                )
+            return JSONResponse(result)
     else:
         assert workspace is not None
         application.include_router(workspace.router)

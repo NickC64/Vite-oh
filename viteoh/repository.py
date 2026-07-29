@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import unicodedata
 import uuid
 from collections.abc import Sequence
@@ -52,6 +53,7 @@ class Repository(Protocol):
         proposal_timeout_seconds: int,
         configured_by: str,
         now: datetime,
+        timezone: str = "UTC",
     ) -> GuildConfig: ...
 
     async def create_proposal(
@@ -67,6 +69,8 @@ class Repository(Protocol):
         type_name: str,
         created_at: datetime,
         deadline_at: datetime,
+        ownership_salt: str = "",
+        ownership_proof: str = "",
     ) -> CreateProposalResult: ...
 
     async def get_proposal(self, proposal_id: str) -> Proposal | None: ...
@@ -74,6 +78,10 @@ class Repository(Protocol):
     async def get_proposal_for_interaction(
         self, interaction_id: str
     ) -> Proposal | None: ...
+
+    async def get_proposal_ownership(
+        self, proposal_id: str
+    ) -> tuple[str, str] | None: ...
 
     async def list_active(self, guild_id: str | None = None) -> Sequence[Proposal]: ...
 
@@ -123,6 +131,35 @@ class Repository(Protocol):
         now: datetime,
         veto_reason: str = "",
     ) -> TransitionResult: ...
+
+    async def withdraw_proposal(
+        self,
+        proposal_id: str,
+        ownership_proof: str,
+        now: datetime,
+        remove_message: bool,
+    ) -> TransitionResult: ...
+
+    async def import_historical_proposal(
+        self,
+        interaction_id: str,
+        guild_id: str,
+        guild_name: str,
+        output_channel_id: str,
+        title: str,
+        normalized_title: str,
+        context: str,
+        type_id: str,
+        type_name: str,
+        status: ProposalStatus,
+        decision_at: datetime,
+        date_only: bool,
+        veto_reason: str,
+        source_url: str,
+        provenance_note: str,
+        imported_by: str,
+        imported_at: datetime,
+    ) -> CreateProposalResult: ...
 
     async def get_type(self, guild_id: str, type_id: str) -> ProposalType | None: ...
 
@@ -264,6 +301,7 @@ class FirestoreRepository:
         proposal_timeout_seconds: int,
         configured_by: str,
         now: datetime,
+        timezone: str = "UTC",
     ) -> GuildConfig:
         ref = self.client.collection("guilds").document(guild_id)
         previous = await ref.get()
@@ -273,6 +311,7 @@ class FirestoreRepository:
             "guild_name": guild_name,
             "output_channel_id": output_channel_id,
             "proposal_timeout_seconds": proposal_timeout_seconds,
+            "timezone": timezone,
             "configured_by": configured_by,
             "created_at": created_at,
             "updated_at": now,
@@ -294,10 +333,15 @@ class FirestoreRepository:
         type_name: str,
         created_at: datetime,
         deadline_at: datetime,
+        ownership_salt: str = "",
+        ownership_proof: str = "",
     ) -> CreateProposalResult:
         proposal_id = str(uuid.uuid4())
         reserve_id = reservation_id(guild_id, normalized_title)
         proposal_ref = self.client.collection("proposals").document(proposal_id)
+        ownership_ref = self.client.collection("proposal_ownership").document(
+            proposal_id
+        )
         reservation_ref = self.client.collection("active_names").document(reserve_id)
         interaction_ref = self.client.collection("interactions").document(
             interaction_id
@@ -345,6 +389,8 @@ class FirestoreRepository:
                 "context": context,
                 "type_id": type_id,
                 "type_name": type_name,
+                "source_kind": "automated",
+                "message_intentionally_removed": False,
                 "reservation_id": reserve_id,
                 "status": ProposalStatus.ACTIVE.value,
                 "created_at": created_at,
@@ -364,8 +410,22 @@ class FirestoreRepository:
                 "archived": False,
                 "archived_at": None,
                 "archived_by": "",
+                "imported_at": None,
+                "imported_by": "",
+                "source_url": "",
+                "provenance_note": "",
+                "historical_date_only": False,
             }
             transaction.create(proposal_ref, proposal_data)
+            if ownership_salt and ownership_proof:
+                transaction.create(
+                    ownership_ref,
+                    {
+                        "salt": ownership_salt,
+                        "proof": ownership_proof,
+                        "created_at": created_at,
+                    },
+                )
             transaction.create(
                 reservation_ref,
                 {
@@ -389,6 +449,17 @@ class FirestoreRepository:
             )
 
         return await create_in_transaction(transaction)
+
+    async def get_proposal_ownership(self, proposal_id: str) -> tuple[str, str] | None:
+        snapshot = await (
+            self.client.collection("proposal_ownership").document(proposal_id).get()
+        )
+        if not snapshot.exists:
+            return None
+        data = snapshot.to_dict() or {}
+        salt = str(data.get("salt") or "")
+        proof = str(data.get("proof") or "")
+        return (salt, proof) if salt and proof else None
 
     async def get_proposal(self, proposal_id: str) -> Proposal | None:
         snapshot = await self.client.collection("proposals").document(proposal_id).get()
@@ -546,10 +617,14 @@ class FirestoreRepository:
         )
         async for interaction in interaction_query.stream():
             await interaction.reference.delete()
+        if proposal.reservation_id:
+            await (
+                self.client.collection("active_names")
+                .document(proposal.reservation_id)
+                .delete()
+            )
         await (
-            self.client.collection("active_names")
-            .document(proposal.reservation_id)
-            .delete()
+            self.client.collection("proposal_ownership").document(proposal_id).delete()
         )
         await proposal_ref.delete()
         return ProposalActionResult(proposal, True, "purged")
@@ -792,6 +867,171 @@ class FirestoreRepository:
             return TransitionResult(terminal, True, "transitioned")
 
         return await transition_in_transaction(transaction)
+
+    async def withdraw_proposal(
+        self,
+        proposal_id: str,
+        ownership_proof: str,
+        now: datetime,
+        remove_message: bool,
+    ) -> TransitionResult:
+        proposal_ref = self.client.collection("proposals").document(proposal_id)
+        ownership_ref = self.client.collection("proposal_ownership").document(
+            proposal_id
+        )
+        transaction = self.client.transaction()
+
+        @firestore.async_transactional
+        async def withdraw_in_transaction(transaction: Any) -> TransitionResult:
+            snapshot = await proposal_ref.get(transaction=transaction)
+            if not snapshot.exists:
+                return TransitionResult(None, False, "not_found")
+            proposal = Proposal.from_document(snapshot.id, snapshot.to_dict() or {})
+            if proposal.status is ProposalStatus.WITHDRAWN:
+                return TransitionResult(proposal, False, "already_withdrawn")
+            if proposal.status is not ProposalStatus.ACTIVE:
+                return TransitionResult(proposal, False, "already_terminal")
+            if now >= proposal.deadline_at:
+                return TransitionResult(proposal, False, "deadline_elapsed")
+            ownership_snapshot = await ownership_ref.get(transaction=transaction)
+            ownership_data = ownership_snapshot.to_dict() or {}
+            stored_proof = str(ownership_data.get("proof") or "")
+            if not stored_proof or not hmac.compare_digest(
+                stored_proof, ownership_proof
+            ):
+                return TransitionResult(proposal, False, "not_owner")
+
+            reserve_ref = self.client.collection("active_names").document(
+                proposal.reservation_id
+            )
+            reserve = await reserve_ref.get(transaction=transaction)
+            update = {
+                "status": ProposalStatus.WITHDRAWN.value,
+                "terminal_at": now,
+                "announcement_synced": False,
+                "effects_complete": False,
+                "announcement_version": proposal.announcement_version + 1,
+                "veto_reason": "",
+                "message_intentionally_removed": remove_message,
+            }
+            transaction.update(proposal_ref, update)
+            if (
+                reserve.exists
+                and (reserve.to_dict() or {}).get("proposal_id") == proposal_id
+            ):
+                transaction.delete(reserve_ref)
+            return TransitionResult(
+                replace(
+                    proposal,
+                    status=ProposalStatus.WITHDRAWN,
+                    terminal_at=now,
+                    announcement_synced=False,
+                    effects_complete=False,
+                    announcement_version=proposal.announcement_version + 1,
+                    veto_reason="",
+                    message_intentionally_removed=remove_message,
+                ),
+                True,
+                "withdrawn",
+            )
+
+        return await withdraw_in_transaction(transaction)
+
+    async def import_historical_proposal(
+        self,
+        interaction_id: str,
+        guild_id: str,
+        guild_name: str,
+        output_channel_id: str,
+        title: str,
+        normalized_title: str,
+        context: str,
+        type_id: str,
+        type_name: str,
+        status: ProposalStatus,
+        decision_at: datetime,
+        date_only: bool,
+        veto_reason: str,
+        source_url: str,
+        provenance_note: str,
+        imported_by: str,
+        imported_at: datetime,
+    ) -> CreateProposalResult:
+        proposal_id = str(uuid.uuid4())
+        proposal_ref = self.client.collection("proposals").document(proposal_id)
+        interaction_ref = self.client.collection("interactions").document(
+            interaction_id
+        )
+        transaction = self.client.transaction()
+
+        @firestore.async_transactional
+        async def import_in_transaction(transaction: Any) -> CreateProposalResult:
+            previous = await interaction_ref.get(transaction=transaction)
+            if previous.exists:
+                previous_id = (previous.to_dict() or {}).get("proposal_id")
+                if previous_id:
+                    existing = (
+                        await self.client.collection("proposals")
+                        .document(str(previous_id))
+                        .get(transaction=transaction)
+                    )
+                    if existing.exists:
+                        return CreateProposalResult(
+                            Proposal.from_document(
+                                existing.id, existing.to_dict() or {}
+                            )
+                        )
+                return CreateProposalResult(None)
+
+            data = {
+                "guild_id": guild_id,
+                "guild_name": guild_name,
+                "output_channel_id": output_channel_id,
+                "title": title,
+                "normalized_title": normalized_title,
+                "context": context,
+                "type_id": type_id,
+                "type_name": type_name,
+                "reservation_id": "",
+                "status": status.value,
+                "created_at": decision_at,
+                "deadline_at": decision_at,
+                "message_id": None,
+                "deadline_task_name": None,
+                "task_scheduled": False,
+                "terminal_at": decision_at,
+                "announcement_synced": True,
+                "effects_complete": True,
+                "acknowledgement_count": 0,
+                "nudge_count": 0,
+                "announcement_version": 0,
+                "render_version": 0,
+                "veto_reason": veto_reason if status is ProposalStatus.VETOED else "",
+                "outcome_message_id": None,
+                "archived": False,
+                "archived_at": None,
+                "archived_by": "",
+                "source_kind": "manual",
+                "message_intentionally_removed": False,
+                "imported_at": imported_at,
+                "imported_by": imported_by,
+                "source_url": source_url,
+                "provenance_note": provenance_note,
+                "historical_date_only": date_only,
+            }
+            transaction.create(proposal_ref, data)
+            transaction.create(
+                interaction_ref,
+                {
+                    "kind": "history_import",
+                    "guild_id": guild_id,
+                    "proposal_id": proposal_id,
+                    "processed_at": imported_at,
+                },
+            )
+            return CreateProposalResult(Proposal.from_document(proposal_id, data))
+
+        return await import_in_transaction(transaction)
 
     async def acknowledge(
         self, proposal_id: str, user_id: str, now: datetime

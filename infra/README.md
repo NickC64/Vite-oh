@@ -73,6 +73,18 @@ openssl rand -base64 48 |
 The key signs browser sessions and hashes requester identifiers. Do not reuse
 the Discord token or place this key in GitHub or tfvars.
 
+Add a separate high-entropy proposal ownership key before deploying:
+
+```bash
+openssl rand -base64 48 |
+  gcloud secrets versions add viteoh-proposal-ownership-key \
+    --project=mail-in-votes \
+    --data-file=-
+```
+
+Only the private worker can read this key. It creates unlinkable, per-proposal
+proofs that let a proposer withdraw their own active proposal anonymously.
+
 Use the bootstrap outputs for the GitHub `production` environment:
 
 ```bash

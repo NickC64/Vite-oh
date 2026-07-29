@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-heading"><div><span class="eyebrow">{{ guild_name }}</span><h1>Add past decision</h1><p>Record a decision made before Vite-oh. This creates no Discord activity.</p></div></section>
+<form class="panel form-stack narrow" method="post" action="/app/history">
+  <input type="hidden" name="csrf" value="{{ session.csrf }}"><input type="hidden" name="guild_id" value="{{ guild_id }}">
+  <label>Title<input name="title" required minlength="1" maxlength="100"></label>
+  <label>Outcome<select name="status" required><option value="passed">Passed</option><option value="vetoed">Vetoed</option><option value="withdrawn">Withdrawn</option></select></label>
+  <div class="duration-fields">
+    <label>Decision date<input type="date" name="decision_date" required></label>
+    <label>Time <span class="optional">optional</span><input type="time" name="decision_time"><small>Interpreted in {{ config.timezone }}. Leave blank for a date-only record.</small></label>
+  </div>
+  <label>Context <span class="optional">optional</span><textarea name="context" maxlength="1000" rows="6"></textarea></label>
+  <label>Type <span class="optional">optional</span><select name="proposal_type"><option value="">No type</option>{% for item in proposal_types %}<option value="{{ item.id }}">{{ item.name }}</option>{% endfor %}</select></label>
+  <label>Anonymous veto reason <span class="optional">optional, vetoed outcomes only</span><textarea name="veto_reason" maxlength="500" rows="3"></textarea></label>
+  <label>Source URL <span class="optional">optional</span><input type="url" name="source_url" maxlength="2048" placeholder="https://…"></label>
+  <label>Provenance note <span class="optional">optional</span><textarea name="provenance_note" maxlength="500" rows="3" placeholder="Where this decision was recorded"></textarea></label>
+  <button class="primary" type="submit">Add to history</button>
+</form>
+{% endblock %}

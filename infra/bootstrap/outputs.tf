@@ -17,3 +17,7 @@ output "discord_bot_token_secret" {
 output "workspace_signing_key_secret" {
   value = google_secret_manager_secret.workspace_signing_key.id
 }
+
+output "proposal_ownership_key_secret" {
+  value = google_secret_manager_secret.proposal_ownership_key.id
+}

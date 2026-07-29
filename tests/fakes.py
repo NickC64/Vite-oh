@@ -22,6 +22,7 @@ from viteoh.repository import reservation_id
 class FakeRepository:
     def __init__(self) -> None:
         self.proposals: dict[str, Proposal] = {}
+        self.proposal_ownership: dict[str, tuple[str, str]] = {}
         self.guilds: dict[str, GuildConfig] = {}
         self.interactions: dict[str, str] = {}
         self.guild_users: dict[str, set[str]] = {}
@@ -59,6 +60,7 @@ class FakeRepository:
         proposal_timeout_seconds: int,
         configured_by: str,
         now: datetime,
+        timezone: str = "UTC",
     ) -> GuildConfig:
         previous = self.guilds.get(guild_id)
         config = GuildConfig(
@@ -69,6 +71,8 @@ class FakeRepository:
             configured_by=configured_by,
             created_at=previous.created_at if previous else now,
             updated_at=now,
+            timezone=timezone,
+            timezone_configured=True,
         )
         self.guilds[guild_id] = config
         return config
@@ -86,6 +90,8 @@ class FakeRepository:
         type_name: str,
         created_at: datetime,
         deadline_at: datetime,
+        ownership_salt: str = "",
+        ownership_proof: str = "",
     ) -> CreateProposalResult:
         async with self.lock:
             if interaction_id in self.interactions:
@@ -115,6 +121,11 @@ class FakeRepository:
                 type_name=type_name,
             )
             self.proposals[proposal.id] = proposal
+            if ownership_salt and ownership_proof:
+                self.proposal_ownership[proposal.id] = (
+                    ownership_salt,
+                    ownership_proof,
+                )
             self.interactions[interaction_id] = proposal.id
             return CreateProposalResult(proposal)
 
@@ -126,6 +137,9 @@ class FakeRepository:
     ) -> Proposal | None:
         proposal_id = self.interactions.get(interaction_id)
         return self.proposals.get(proposal_id) if proposal_id else None
+
+    async def get_proposal_ownership(self, proposal_id: str) -> tuple[str, str] | None:
+        return self.proposal_ownership.get(proposal_id)
 
     async def list_active(self, guild_id: str | None = None) -> list[Proposal]:
         return [
@@ -187,6 +201,7 @@ class FakeRepository:
         if not proposal.effects_complete:
             return ProposalActionResult(proposal, False, "effects_pending")
         del self.proposals[proposal_id]
+        self.proposal_ownership.pop(proposal_id, None)
         self.acknowledgements.pop(proposal_id, None)
         self.nudges.pop(proposal_id, None)
         self.subscribers.pop(proposal_id, None)
@@ -353,6 +368,91 @@ class FakeRepository:
             )
             self.proposals[proposal_id] = updated
             return TransitionResult(updated, True, "transitioned")
+
+    async def withdraw_proposal(
+        self,
+        proposal_id: str,
+        ownership_proof: str,
+        now: datetime,
+        remove_message: bool,
+    ) -> TransitionResult:
+        async with self.lock:
+            proposal = self.proposals.get(proposal_id)
+            if not proposal:
+                return TransitionResult(None, False, "not_found")
+            if proposal.status is ProposalStatus.WITHDRAWN:
+                return TransitionResult(proposal, False, "already_withdrawn")
+            if proposal.status is not ProposalStatus.ACTIVE:
+                return TransitionResult(proposal, False, "already_terminal")
+            if now >= proposal.deadline_at:
+                return TransitionResult(proposal, False, "deadline_elapsed")
+            ownership = self.proposal_ownership.get(proposal_id)
+            if not ownership or ownership[1] != ownership_proof:
+                return TransitionResult(proposal, False, "not_owner")
+            updated = replace(
+                proposal,
+                status=ProposalStatus.WITHDRAWN,
+                terminal_at=now,
+                announcement_synced=False,
+                effects_complete=False,
+                announcement_version=proposal.announcement_version + 1,
+                message_intentionally_removed=remove_message,
+            )
+            self.proposals[proposal_id] = updated
+            return TransitionResult(updated, True, "withdrawn")
+
+    async def import_historical_proposal(
+        self,
+        interaction_id: str,
+        guild_id: str,
+        guild_name: str,
+        output_channel_id: str,
+        title: str,
+        normalized_title: str,
+        context: str,
+        type_id: str,
+        type_name: str,
+        status: ProposalStatus,
+        decision_at: datetime,
+        date_only: bool,
+        veto_reason: str,
+        source_url: str,
+        provenance_note: str,
+        imported_by: str,
+        imported_at: datetime,
+    ) -> CreateProposalResult:
+        if interaction_id in self.interactions:
+            return CreateProposalResult(
+                self.proposals[self.interactions[interaction_id]]
+            )
+        proposal = Proposal(
+            id=self.next_id,
+            guild_id=guild_id,
+            guild_name=guild_name,
+            output_channel_id=output_channel_id,
+            title=title,
+            normalized_title=normalized_title,
+            context=context,
+            reservation_id="",
+            status=status,
+            created_at=decision_at,
+            deadline_at=decision_at,
+            terminal_at=decision_at,
+            announcement_synced=True,
+            effects_complete=True,
+            type_id=type_id,
+            type_name=type_name,
+            veto_reason=veto_reason,
+            source_kind="manual",
+            imported_at=imported_at,
+            imported_by=imported_by,
+            source_url=source_url,
+            provenance_note=provenance_note,
+            historical_date_only=date_only,
+        )
+        self.proposals[proposal.id] = proposal
+        self.interactions[interaction_id] = proposal.id
+        return CreateProposalResult(proposal)
 
     async def acknowledge(
         self, proposal_id: str, user_id: str, now: datetime
@@ -590,6 +690,7 @@ class FakeDiscord:
         self.synced: list[Proposal] = []
         self.outcomes: list[Proposal] = []
         self.deleted_history: list[Proposal] = []
+        self.deleted_announcements: list[Proposal] = []
         self.dms: list[tuple[str, str]] = []
         self.dm_failures: set[str] = set()
         self.channels: dict[str, tuple[str, str]] = {
@@ -626,6 +727,9 @@ class FakeDiscord:
 
     async def delete_proposal_history_messages(self, proposal: Proposal) -> None:
         self.deleted_history.append(proposal)
+
+    async def delete_proposal_announcement(self, proposal: Proposal) -> None:
+        self.deleted_announcements.append(proposal)
 
     async def get_guild_member(self, guild_id: str, user_id: str) -> dict[str, object]:
         from viteoh.discord_api import DiscordAPIError

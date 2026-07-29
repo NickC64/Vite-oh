@@ -8,7 +8,7 @@ from tests.fakes import FakeDiscord, FakeRepository, FakeTasks
 from viteoh.components import component_id
 from viteoh.config import Settings
 from viteoh.domain import GuildConfig, ProposalStatus, utcnow
-from viteoh.worker import MANAGE_GUILD, InteractionProcessor
+from viteoh.worker import MANAGE_GUILD, InteractionProcessor, _historical_instant
 
 
 @pytest.fixture
@@ -20,6 +20,7 @@ def system() -> tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDisco
         discord_application_id="app",
         discord_owner_user_id="owner",
         workspace_signing_secret="secret",
+        proposal_ownership_secret="ownership-secret",
         workspace_url="https://workspace.example",
     )
     now = utcnow()
@@ -107,6 +108,16 @@ def command(
             "options": [{"name": path, "type": 1, "options": command_options}],
         },
     }
+
+
+def test_historical_time_rejects_dst_gaps_and_ambiguity() -> None:
+    with pytest.raises(ValueError, match="does not exist"):
+        _historical_instant("2026-03-08", "02:30", "America/Toronto")
+    with pytest.raises(ValueError, match="ambiguous"):
+        _historical_instant("2026-11-01", "01:30", "America/Toronto")
+    instant, date_only = _historical_instant("2026-07-01", "", "America/Toronto")
+    assert date_only
+    assert instant.tzinfo is not None
 
 
 async def test_new_is_durable_scheduled_and_idempotent(
@@ -218,7 +229,7 @@ async def test_reconciliation_upgrades_legacy_active_announcement_once(
 
     assert first["rendered"] == 1
     assert second["rendered"] == 0
-    assert repository.proposals[proposal.id].render_version == 1
+    assert repository.proposals[proposal.id].render_version == 2
     assert discord.synced[-1].id == proposal.id
 
 
@@ -849,6 +860,100 @@ async def test_workspace_creation_may_extend_but_never_shorten_deadline(
     failed = repository.workspace_jobs["shortened"]
     assert failed.status == "failed"
     assert "server minimum" in failed.message
+
+
+async def test_proposer_can_withdraw_anonymously_and_remove_card(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+) -> None:
+    processor, repository, tasks, discord = system
+    await processor.process_workspace(
+        {
+            "id": "owned-create",
+            "action": "create",
+            "actor_user_id": "user",
+            "guild_id": "guild",
+            "data": {"title": "An oopsie", "duration_minutes": 5},
+        }
+    )
+    proposal_id = repository.workspace_jobs["owned-create"].proposal_id
+    assert proposal_id
+    proposal = repository.proposals[proposal_id]
+    ownership = await repository.get_proposal_ownership(proposal_id)
+    assert ownership and ownership[0] and ownership[1]
+    assert "user" not in repr(proposal)
+    assert "ownership" not in repr(proposal)
+    capabilities = await processor.workspace_proposal_capabilities(
+        "guild", "user", proposal_id
+    )
+    assert capabilities["can_withdraw"]
+    assert not (
+        await processor.workspace_proposal_capabilities(
+            "guild", "someone-else", proposal_id
+        )
+    )["can_withdraw"]
+
+    await processor.process_workspace(
+        {
+            "id": "withdraw",
+            "action": "withdraw",
+            "actor_user_id": "user",
+            "guild_id": "guild",
+            "data": {"proposal_id": proposal_id, "remove_message": True},
+        }
+    )
+    terminal = repository.proposals[proposal_id]
+    assert terminal.status is ProposalStatus.WITHDRAWN
+    assert terminal.message_intentionally_removed
+    assert terminal.outcome_message_id is None
+    assert discord.deleted_announcements[-1].id == proposal_id
+    assert tasks.deleted
+
+
+async def test_admin_repairs_card_and_imports_date_only_history(
+    system: tuple[InteractionProcessor, FakeRepository, FakeTasks, FakeDiscord],
+) -> None:
+    processor, repository, _, discord = system
+    await processor.process(command("new", value="Repair me"))
+    proposal = next(iter(repository.proposals.values()))
+    await processor.process_workspace(
+        {
+            "id": "repair",
+            "action": "repair",
+            "actor_user_id": "admin",
+            "guild_id": "guild",
+            "data": {"proposal_id": proposal.id},
+        }
+    )
+    assert repository.workspace_jobs["repair"].status == "succeeded"
+    assert discord.synced[-1].id == proposal.id
+
+    repository.guilds["guild"] = replace(
+        repository.guilds["guild"],
+        timezone="America/Toronto",
+        timezone_configured=True,
+    )
+    await processor.process_workspace(
+        {
+            "id": "history",
+            "action": "history_import",
+            "actor_user_id": "admin",
+            "guild_id": "guild",
+            "data": {
+                "title": "Earlier agreement",
+                "status": "passed",
+                "decision_date": "2020-04-05",
+                "decision_time": "",
+                "provenance_note": "Copied from the old decisions channel.",
+            },
+        }
+    )
+    imported_id = repository.workspace_jobs["history"].proposal_id
+    assert imported_id
+    imported = repository.proposals[imported_id]
+    assert imported.source_kind == "manual"
+    assert imported.historical_date_only
+    assert imported.effects_complete
+    assert imported.message_id is None
 
 
 async def test_workspace_member_actions_share_discord_safety_rules(

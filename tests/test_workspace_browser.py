@@ -118,8 +118,8 @@ def test_workspace_server_rail_theme_and_mobile_drawer(
     page.get_by_label("Workspace navigation").get_by_role(
         "link", name="Create proposal"
     ).click()
-    duration = page.get_by_role("spinbutton", name="Voting duration")
-    duration.fill("120")
+    page.get_by_role("spinbutton", name="Hours").fill("2")
+    page.get_by_role("spinbutton", name="Minutes").fill("0")
     expect(page.locator("[data-duration-summary]")).to_have_text("Selected: 2 hours.")
     expect(page.locator("[data-preview-deadline]")).to_have_text(
         "Fixed 2 hours after creation"

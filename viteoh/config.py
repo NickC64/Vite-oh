@@ -28,6 +28,7 @@ class Settings(BaseSettings):
 
     signature_max_age_seconds: int = Field(default=300, ge=30, le=900)
     workspace_signing_secret: str = ""
+    proposal_ownership_secret: str = ""
     workspace_launch_ttl_seconds: int = Field(default=300, ge=60, le=900)
     workspace_session_ttl_seconds: int = Field(
         default=7 * 24 * 60 * 60, ge=3600, le=30 * 24 * 60 * 60

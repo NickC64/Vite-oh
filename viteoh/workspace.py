@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, available_timezones
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -48,6 +49,7 @@ class Workspace:
         self.codec = SignedTokenCodec(settings.workspace_signing_secret)
         self.templates = Jinja2Templates(directory=WEB_ROOT / "templates")
         self.templates.env.filters["safe_markdown"] = safe_markdown
+        self.templates.env.filters["guild_datetime"] = _guild_datetime
         self.templates.env.globals["asset_version"] = settings.asset_version
         self.router = APIRouter()
         self._member_search_times: dict[tuple[str, str], float] = {}
@@ -178,6 +180,7 @@ class Workspace:
                 )
             types = await self.repository.list_types(guild_id)
             baseline_minutes = config.proposal_timeout_seconds // 60
+            duration_parts = _duration_parts(baseline_minutes)
             return self.templates.TemplateResponse(
                 request,
                 "proposal_form.html",
@@ -192,6 +195,7 @@ class Workspace:
                     baseline_duration=_format_duration(baseline_minutes),
                     maximum_duration=_format_duration(MAX_PROPOSAL_DURATION_MINUTES),
                     maximum_duration_minutes=MAX_PROPOSAL_DURATION_MINUTES,
+                    duration_parts=duration_parts,
                     proposal_types=types,
                 ),
             )
@@ -244,6 +248,9 @@ class Workspace:
             title: str = Form(...),
             proposal_type: str = Form(""),
             context: str = Form(""),
+            duration_days: int | None = Form(None),
+            duration_hours: int | None = Form(None),
+            duration_remainder_minutes: int | None = Form(None),
             duration_minutes: str = Form(""),
         ) -> Response:
             session = self._require_session(request)
@@ -260,7 +267,21 @@ class Workspace:
                 raise HTTPException(409, "This server must be configured first.")
             baseline_minutes = config.proposal_timeout_seconds // 60
             try:
-                selected_duration = int(duration_minutes or baseline_minutes)
+                selected_duration = (
+                    int(duration_minutes)
+                    if duration_minutes
+                    else (
+                        baseline_minutes
+                        if duration_days is None
+                        and duration_hours is None
+                        and duration_remainder_minutes is None
+                        else _duration_minutes(
+                            duration_days or 0,
+                            duration_hours or 0,
+                            duration_remainder_minutes or 0,
+                        )
+                    )
+                )
             except ValueError as exc:
                 raise HTTPException(422, "Choose a valid voting duration.") from exc
             if not (
@@ -384,6 +405,23 @@ class Workspace:
                 {"reason": reason},
             )
 
+        @router.post("/app/proposals/{proposal_id}/withdraw")
+        async def withdraw_proposal(
+            request: Request,
+            proposal_id: str,
+            guild_id: str = Form(...),
+            csrf: str = Form(...),
+            remove_message: str = Form(""),
+        ) -> Response:
+            return await self._proposal_action(
+                request,
+                proposal_id,
+                guild_id,
+                csrf,
+                "withdraw",
+                {"remove_message": remove_message == "on"},
+            )
+
         @router.get("/app/guilds/{guild_id}/members")
         async def search_members(
             request: Request, guild_id: str, q: str = ""
@@ -421,6 +459,21 @@ class Workspace:
             self._require_admin(access, session.user_id)
             return await self._enqueue(
                 session, guild_id, "delete", {"proposal_id": proposal_id}
+            )
+
+        @router.post("/app/proposals/{proposal_id}/repair")
+        async def repair_proposal(
+            request: Request,
+            proposal_id: str,
+            guild_id: str = Form(...),
+            csrf: str = Form(...),
+        ) -> Response:
+            session = self._require_session(request)
+            self._check_csrf(session, csrf)
+            access = await self._authorize(session, guild_id)
+            self._require_admin(access, session.user_id)
+            return await self._enqueue(
+                session, guild_id, "repair", {"proposal_id": proposal_id}
             )
 
         @router.post("/app/proposals/{proposal_id}/archive")
@@ -515,6 +568,7 @@ class Workspace:
             session, guild_id, access, configs = await self._page_access(request, guild)
             self._require_admin(access, session.user_id)
             config = await self.repository.get_guild_config(guild_id)
+            total_minutes = config.proposal_timeout_seconds // 60 if config else 2880
             return self.templates.TemplateResponse(
                 request,
                 "settings.html",
@@ -526,6 +580,12 @@ class Workspace:
                     active_page="settings",
                     config=config,
                     output_channels=access["output_channels"],
+                    duration_parts=_duration_parts(total_minutes),
+                    timezones=sorted(
+                        zone
+                        for zone in available_timezones()
+                        if not zone.startswith(("Etc/", "posix/", "right/"))
+                    ),
                 ),
             )
 
@@ -535,23 +595,116 @@ class Workspace:
             guild_id: str = Form(...),
             csrf: str = Form(...),
             channel_id: str = Form(...),
-            duration_minutes: int = Form(...),
+            duration_days: int | None = Form(None),
+            duration_hours: int | None = Form(None),
+            duration_remainder_minutes: int | None = Form(None),
+            duration_minutes: str = Form(""),
+            timezone: str = Form(""),
         ) -> Response:
             session = self._require_session(request)
             self._check_csrf(session, csrf)
             access = await self._authorize(session, guild_id)
             self._require_admin(access, session.user_id)
-            if not 1 <= duration_minutes <= 10080:
-                raise HTTPException(
-                    422, "Duration must be between 1 and 10,080 minutes."
+            existing_config = await self.repository.get_guild_config(guild_id)
+            try:
+                total_minutes = (
+                    int(duration_minutes)
+                    if duration_minutes
+                    else _duration_minutes(
+                        duration_days or 0,
+                        duration_hours or 0,
+                        duration_remainder_minutes or 0,
+                    )
                 )
+            except ValueError as exc:
+                raise HTTPException(422, "Choose a valid voting duration.") from exc
+            timezone = timezone.strip()
+            if not timezone:
+                if not existing_config:
+                    raise HTTPException(
+                        422,
+                        "Choose a timezone before configuring this server.",
+                    )
+                timezone = existing_config.timezone
+            try:
+                ZoneInfo(timezone.strip())
+            except (ValueError, KeyError) as exc:
+                raise HTTPException(
+                    422, "Choose a valid IANA timezone, such as America/Toronto."
+                ) from exc
             return await self._enqueue(
                 session,
                 guild_id,
                 "configure",
                 {
                     "channel_id": channel_id,
-                    "duration_minutes": duration_minutes,
+                    "duration_minutes": total_minutes,
+                    "timezone": timezone.strip(),
+                },
+            )
+
+        @router.get("/app/history/new", response_class=HTMLResponse)
+        async def new_history_entry(request: Request, guild: str = "") -> Response:
+            session, guild_id, access, configs = await self._page_access(request, guild)
+            self._require_admin(access, session.user_id)
+            config = await self.repository.get_guild_config(guild_id)
+            if not config:
+                return RedirectResponse(
+                    f"/app/settings?guild={guild_id}", status_code=303
+                )
+            if not config.timezone_configured:
+                raise HTTPException(
+                    409,
+                    "Save this server's timezone in Server Settings before "
+                    "adding past decisions.",
+                )
+            return self.templates.TemplateResponse(
+                request,
+                "history_form.html",
+                self._context(
+                    session,
+                    guild_id,
+                    access,
+                    configs,
+                    active_page="history_add",
+                    config=config,
+                    proposal_types=await self.repository.list_types(guild_id),
+                ),
+            )
+
+        @router.post("/app/history")
+        async def add_history_entry(
+            request: Request,
+            guild_id: str = Form(...),
+            csrf: str = Form(...),
+            title: str = Form(...),
+            status: str = Form(...),
+            decision_date: str = Form(...),
+            decision_time: str = Form(""),
+            context: str = Form(""),
+            proposal_type: str = Form(""),
+            veto_reason: str = Form(""),
+            source_url: str = Form(""),
+            provenance_note: str = Form(""),
+        ) -> Response:
+            session = self._require_session(request)
+            self._check_csrf(session, csrf)
+            access = await self._authorize(session, guild_id)
+            self._require_admin(access, session.user_id)
+            return await self._enqueue(
+                session,
+                guild_id,
+                "history_import",
+                {
+                    "title": title,
+                    "status": status,
+                    "decision_date": decision_date,
+                    "decision_time": decision_time,
+                    "context": context,
+                    "type_id": proposal_type,
+                    "veto_reason": veto_reason,
+                    "source_url": source_url,
+                    "provenance_note": provenance_note,
                 },
             )
 
@@ -660,7 +813,8 @@ class Workspace:
                     job
                     and job.status == "succeeded"
                     and action_proposal_id
-                    and job.action in {"acknowledge", "subscription", "nudge", "veto"}
+                    and job.action
+                    in {"acknowledge", "subscription", "nudge", "veto", "withdraw"}
                 ):
                     updated = await self.repository.get_proposal(action_proposal_id)
                     if updated and updated.guild_id == guild_id:
@@ -678,7 +832,9 @@ class Workspace:
                         "proposal_id": action_proposal_id,
                         "session": session,
                         "refresh_page": bool(
-                            job and job.status == "succeeded" and job.action == "veto"
+                            job
+                            and job.status == "succeeded"
+                            and job.action in {"veto", "withdraw"}
                         ),
                         **action_context,
                     },
@@ -757,11 +913,28 @@ class Workspace:
             subscribed = await self.repository.get_proposal_subscription(
                 proposal.id, session.user_id
             )
+        capabilities = {"can_withdraw": False, "can_repair": False}
+        try:
+            capabilities = await self.worker.proposal_capabilities(
+                proposal.guild_id, session.user_id, proposal.id
+            )
+        except WorkspaceWorkerError:
+            logger.warning(
+                "Could not load proposal capabilities",
+                extra={"guild_id": proposal.guild_id, "proposal_id": proposal.id},
+            )
         return {
             "proposal": proposal,
             "acknowledged": acknowledged,
             "proposal_subscribed": subscribed,
-            "discord_url": _proposal_link(proposal),
+            "discord_url": (
+                _proposal_link(proposal)
+                if proposal.message_id
+                and proposal.source_kind == "automated"
+                and not proposal.message_intentionally_removed
+                else ""
+            ),
+            **capabilities,
         }
 
     async def _enqueue(
@@ -822,6 +995,10 @@ class Workspace:
         guilds = sorted(
             (_guild_view(item) for item in summaries),
             key=lambda item: str(item["guild_name"]).casefold(),
+        )
+        selected_config = await self.repository.get_guild_config(selected)
+        access["_guild_timezone"] = (
+            selected_config.timezone if selected_config else "UTC"
         )
         return session, selected, access, guilds
 
@@ -904,6 +1081,7 @@ class Workspace:
         guilds: list[dict[str, Any]],
         **extra: Any,
     ) -> dict[str, Any]:
+        timezone = str(access.get("_guild_timezone") or "UTC")
         return {
             "title": extra.pop("title", "Vite-oh"),
             "session": session,
@@ -914,6 +1092,7 @@ class Workspace:
                 or session.user_id == self.settings.discord_owner_user_id
             ),
             "guilds": guilds,
+            "guild_timezone": timezone,
             "current_guild": next(
                 (item for item in guilds if str(item.get("guild_id", "")) == guild_id),
                 _guild_view(
@@ -988,6 +1167,35 @@ def _format_duration(minutes: int) -> str:
             amount = minutes // unit_minutes
             return f"{amount:,} {singular}{'' if amount == 1 else 's'}"
     return f"{minutes:,} minute{'' if minutes == 1 else 's'}"
+
+
+def _duration_parts(minutes: int) -> dict[str, int]:
+    days, remainder = divmod(minutes, 1440)
+    hours, remainder_minutes = divmod(remainder, 60)
+    return {
+        "days": days,
+        "hours": hours,
+        "minutes": remainder_minutes,
+    }
+
+
+def _duration_minutes(days: int, hours: int, minutes: int) -> int:
+    if not 0 <= days <= 7 or not 0 <= hours <= 23 or not 0 <= minutes <= 59:
+        raise HTTPException(422, "Choose a valid days, hours, and minutes duration.")
+    total = days * 1440 + hours * 60 + minutes
+    if not 1 <= total <= MAX_PROPOSAL_DURATION_MINUTES:
+        raise HTTPException(422, "Duration must be between one minute and seven days.")
+    return total
+
+
+def _guild_datetime(value: datetime, timezone_name: str, mode: str = "long") -> str:
+    try:
+        local = value.astimezone(ZoneInfo(timezone_name))
+    except (ValueError, KeyError):
+        local = value.astimezone(UTC)
+    if mode == "date":
+        return local.strftime("%b %-d, %Y")
+    return local.strftime("%b %-d, %Y at %-I:%M %p %Z")
 
 
 def _guild_view(item: dict[str, Any]) -> dict[str, Any]:

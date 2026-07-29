@@ -16,6 +16,10 @@ data "google_secret_manager_secret" "workspace_signing_key" {
   secret_id = "viteoh-workspace-signing-key"
 }
 
+data "google_secret_manager_secret" "proposal_ownership_key" {
+  secret_id = "viteoh-proposal-ownership-key"
+}
+
 resource "google_firestore_database" "app" {
   project                     = var.project_id
   name                        = "(default)"
@@ -93,6 +97,12 @@ resource "google_service_account_iam_member" "task_act_as" {
 
 resource "google_secret_manager_secret_iam_member" "worker_token" {
   secret_id = data.google_secret_manager_secret.discord_bot_token.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.worker.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "worker_proposal_ownership_key" {
+  secret_id = data.google_secret_manager_secret.proposal_ownership_key.id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.worker.email}"
 }
@@ -230,6 +240,15 @@ resource "google_cloud_run_v2_service" "worker" {
           }
         }
       }
+      env {
+        name = "PROPOSAL_OWNERSHIP_SECRET"
+        value_source {
+          secret_key_ref {
+            secret  = data.google_secret_manager_secret.proposal_ownership_key.secret_id
+            version = "latest"
+          }
+        }
+      }
       startup_probe {
         initial_delay_seconds = 0
         timeout_seconds       = 2
@@ -245,6 +264,7 @@ resource "google_cloud_run_v2_service" "worker" {
   depends_on = [
     google_project_iam_member.worker_roles,
     google_secret_manager_secret_iam_member.worker_token,
+    google_secret_manager_secret_iam_member.worker_proposal_ownership_key,
     google_secret_manager_secret_iam_member.workspace_signing_key,
     google_service_account_iam_member.task_act_as,
   ]

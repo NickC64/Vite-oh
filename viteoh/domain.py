@@ -11,6 +11,7 @@ class ProposalStatus(StrEnum):
     ACTIVE = "active"
     PASSED = "passed"
     VETOED = "vetoed"
+    WITHDRAWN = "withdrawn"
     DELETED = "deleted"
 
 
@@ -24,6 +25,8 @@ class GuildConfig:
     created_at: datetime
     updated_at: datetime
     custom_type_count: int = 0
+    timezone: str = "UTC"
+    timezone_configured: bool = False
 
     @classmethod
     def from_document(cls, document_id: str, data: dict[str, Any]) -> "GuildConfig":
@@ -36,6 +39,8 @@ class GuildConfig:
             created_at=_utc(data["created_at"]),
             updated_at=_utc(data["updated_at"]),
             custom_type_count=int(data.get("custom_type_count", 0)),
+            timezone=str(data.get("timezone") or "UTC"),
+            timezone_configured="timezone" in data,
         )
 
 
@@ -99,6 +104,13 @@ class Proposal:
     archived: bool = False
     archived_at: datetime | None = None
     archived_by: str = ""
+    source_kind: str = "automated"
+    message_intentionally_removed: bool = False
+    imported_at: datetime | None = None
+    imported_by: str = ""
+    source_url: str = ""
+    provenance_note: str = ""
+    historical_date_only: bool = False
 
     @classmethod
     def from_document(cls, document_id: str, data: dict[str, Any]) -> "Proposal":
@@ -133,6 +145,17 @@ class Proposal:
                 _utc(data["archived_at"]) if data.get("archived_at") else None
             ),
             archived_by=str(data.get("archived_by", "")),
+            source_kind=str(data.get("source_kind") or "automated"),
+            message_intentionally_removed=bool(
+                data.get("message_intentionally_removed", False)
+            ),
+            imported_at=(
+                _utc(data["imported_at"]) if data.get("imported_at") else None
+            ),
+            imported_by=str(data.get("imported_by") or ""),
+            source_url=str(data.get("source_url") or ""),
+            provenance_note=str(data.get("provenance_note") or ""),
+            historical_date_only=bool(data.get("historical_date_only", False)),
         )
 
 

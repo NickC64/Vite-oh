@@ -6,21 +6,36 @@
 </a>
 <section class="proposal-detail">
   {% if proposal.archived %}<span class="archived-label">{{ icon("archive", 15) }}Archived</span>{% endif %}
+  {% if proposal.source_kind == "manual" %}<span class="archived-label">Imported history</span>{% endif %}
   {% if proposal.type_name %}<span class="type-tag">{{ proposal.type_name }}</span>{% endif %}
   <h1>{{ proposal.title }}</h1>
   {% if proposal.context %}<div class="context markdown">{{ proposal.context|safe_markdown }}</div>{% endif %}
   <div class="detail-grid">
     <div><span>Status</span><strong class="status {{ proposal.status.value }}">{{ proposal.status.value }}</strong></div>
-    <div><span>Deadline</span><strong><time datetime="{{ proposal.deadline_at.isoformat() }}" data-local-datetime="long">{{ proposal.deadline_at.strftime("%b %-d, %Y at %-I:%M %p UTC") }}</time></strong></div>
+    {% if proposal.source_kind == "manual" %}
+    <div><span>Decision date</span><strong><time datetime="{{ proposal.terminal_at.isoformat() }}" data-local-datetime="{{ 'date' if proposal.historical_date_only else 'long' }}" {% if proposal.historical_date_only %}data-date-only="true"{% endif %}>{{ proposal.terminal_at|guild_datetime(guild_timezone, 'date' if proposal.historical_date_only else 'long') }}</time></strong></div>
+    {% else %}
+    <div><span>Deadline</span><strong><time datetime="{{ proposal.deadline_at.isoformat() }}" data-local-datetime="long">{{ proposal.deadline_at|guild_datetime(guild_timezone) }}</time></strong></div>
     <div><span>Acknowledged</span><strong id="acknowledgement-count">{{ proposal.acknowledgement_count }} members</strong></div>
+    {% endif %}
   </div>
   {% if proposal.veto_reason %}
   <section class="reason"><h2>Anonymous veto reason</h2><div class="markdown">{{ proposal.veto_reason|safe_markdown }}</div></section>
   {% endif %}
+  {% if proposal.source_kind == "manual" and (proposal.source_url or proposal.provenance_note) %}
+  <section class="reason"><h2>Provenance</h2>
+    {% if proposal.provenance_note %}<p>{{ proposal.provenance_note }}</p>{% endif %}
+    {% if proposal.source_url %}<p><a href="{{ proposal.source_url }}" rel="noreferrer">Open source record</a></p>{% endif %}
+  </section>
+  {% endif %}
+  {% if proposal.source_kind != "manual" %}
   {% include "proposal_actions.html" %}
+  {% endif %}
   <div class="proposal-action-result-slot"><div id="proposal-action-result" aria-live="polite"></div></div>
   <div class="actions">
-    <a class="button primary" href="{{ discord_url }}" rel="noreferrer">{{ icon("external", 18) }}Open in Discord</a>
+    {% if discord_url %}<a class="button primary" href="{{ discord_url }}" rel="noreferrer">{{ icon("external", 18) }}Open in Discord</a>{% endif %}
+    {% if can_withdraw %}<button type="button" data-dialog-open="withdraw-proposal-dialog">Withdraw proposal</button>{% endif %}
+    {% if can_repair %}<form class="inline-form" method="post" action="/app/proposals/{{ proposal.id }}/repair"><input type="hidden" name="csrf" value="{{ session.csrf }}"><input type="hidden" name="guild_id" value="{{ guild_id }}"><button type="submit">{{ icon("external", 18) }}Repair Discord card</button></form>{% endif %}
     {% if can_manage and proposal.status.value == "active" %}
     <button class="danger" type="button" data-dialog-open="delete-proposal-dialog">{{ icon("trash", 18) }}Delete proposal</button>
     {% elif can_manage and not proposal.archived %}
@@ -35,6 +50,17 @@
     {% endif %}
   </div>
 </section>
+{% if can_withdraw %}
+<dialog class="confirm-dialog" id="withdraw-proposal-dialog">
+  <h2>Withdraw this proposal?</h2>
+  <p>The proposal will remain in history without revealing who submitted it. Subscribers will receive a neutral update.</p>
+  <form class="dialog-actions form-stack" method="post" action="/app/proposals/{{ proposal.id }}/withdraw">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}"><input type="hidden" name="guild_id" value="{{ guild_id }}">
+    <label class="checkbox-row"><input type="checkbox" name="remove_message"> Also remove the Discord card instead of marking it Withdrawn</label>
+    <button type="button" data-dialog-close>Cancel</button><button class="danger" type="submit">Withdraw proposal</button>
+  </form>
+</dialog>
+{% endif %}
 {% if can_manage and proposal.status.value == "active" %}
 <dialog class="confirm-dialog" id="delete-proposal-dialog">
   <div class="dialog-icon">{{ icon("trash", 22) }}</div>

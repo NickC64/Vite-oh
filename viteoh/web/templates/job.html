@@ -9,7 +9,7 @@
   {% if job.action == "create" and result_proposal %}
   <p>
     Proposal created successfully. It will pass
-    <time datetime="{{ result_proposal.deadline_at.isoformat() }}" data-relative="{{ result_proposal.deadline_at.isoformat() }}">{{ result_proposal.deadline_at.strftime("%b %-d at %-I:%M %p UTC") }}</time>
+    <time datetime="{{ result_proposal.deadline_at.isoformat() }}" data-relative="{{ result_proposal.deadline_at.isoformat() }}">{{ result_proposal.deadline_at|guild_datetime(guild_timezone) }}</time>
     unless vetoed.
   </p>
   {% else %}
@@ -34,7 +34,9 @@
     <a class="button primary" href="/app/types?guild={{ job.guild_id }}">Review proposal types</a>
     {% elif job.action in ["archive", "restore", "purge"] %}
     <a class="button primary" href="/app/archive?guild={{ job.guild_id }}">Return to archive</a>
-    {% elif job.action in ["acknowledge", "subscription", "nudge", "veto"] and job.proposal_id %}
+    {% elif job.action == "history_import" %}
+    <a class="button primary" href="/app/history/new?guild={{ job.guild_id }}">Review past decision</a>
+    {% elif job.action in ["acknowledge", "subscription", "nudge", "veto", "withdraw", "repair"] and job.proposal_id %}
     <a class="button primary" href="/app/proposals/{{ job.proposal_id }}?guild={{ job.guild_id }}">Return to proposal</a>
     {% endif %}
     <a class="button" href="/app?guild={{ job.guild_id }}">Back to proposals</a>

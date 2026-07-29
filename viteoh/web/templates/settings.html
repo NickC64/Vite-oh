@@ -15,9 +15,21 @@
     </label>
   </section>
   <section class="settings-section">
-    <label>Duration in minutes
-      <input type="number" name="duration_minutes" min="1" max="10080" required value="{{ config.proposal_timeout_seconds // 60 if config else 2880 }}">
-      <small>Between one minute and seven days. Existing proposal deadlines do not change.</small>
+    <fieldset class="duration-picker" data-duration-picker>
+      <legend>Default voting duration</legend>
+      <div class="duration-fields">
+        <label>Days<input type="number" name="duration_days" min="0" max="7" required value="{{ duration_parts.days }}" inputmode="numeric"></label>
+        <label>Hours<input type="number" name="duration_hours" min="0" max="23" required value="{{ duration_parts.hours }}" inputmode="numeric"></label>
+        <label>Minutes<input type="number" name="duration_remainder_minutes" min="0" max="59" required value="{{ duration_parts.minutes }}" inputmode="numeric"></label>
+      </div>
+      <small>Between one minute and seven days. Existing proposal deadlines do not change. <strong data-duration-summary></strong></small>
+    </fieldset>
+  </section>
+  <section class="settings-section">
+    <label>Server timezone
+      <input name="timezone" required list="timezone-options" value="{{ config.timezone if config and config.timezone_configured else '' }}" placeholder="America/Toronto" data-timezone-field data-unconfigured="{{ 'false' if config and config.timezone_configured else 'true' }}">
+      <datalist id="timezone-options">{% for timezone in timezones %}<option value="{{ timezone }}">{% endfor %}</datalist>
+      <small>Used when a browser cannot provide a useful timezone and when adding past decisions.</small>
     </label>
   </section>
   <div><button class="primary" type="submit">Save server settings</button></div>

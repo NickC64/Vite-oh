@@ -100,7 +100,7 @@ if (form) {
   const previewTitle = document.querySelector("[data-preview-title]");
   const previewContext = document.querySelector("[data-preview-context]");
   const previewType = document.querySelector("[data-preview-type]");
-  const duration = form.querySelector("[data-duration]");
+  const durationPicker = form.querySelector("[data-duration-picker]");
   const durationSummary = form.querySelector("[data-duration-summary]");
   const previewDeadline = document.querySelector("[data-preview-deadline]");
   const count = document.querySelector("[data-title-count]");
@@ -127,7 +127,10 @@ if (form) {
     const hasType = Boolean(selected?.value);
     previewType.textContent = hasType ? `Type · ${selected.textContent}` : "";
     previewType.hidden = !hasType;
-    const durationMinutes = Number(duration.value);
+    const durationMinutes =
+      Number(durationPicker?.querySelector("[name=duration_days]")?.value || 0) * 1440 +
+      Number(durationPicker?.querySelector("[name=duration_hours]")?.value || 0) * 60 +
+      Number(durationPicker?.querySelector("[name=duration_remainder_minutes]")?.value || 0);
     if (Number.isInteger(durationMinutes) && durationMinutes > 0) {
       const label = formatDuration(durationMinutes);
       durationSummary.textContent = `Selected: ${label}.`;
@@ -136,6 +139,55 @@ if (form) {
   };
   form.addEventListener("input", update);
   update();
+}
+
+function formatDuration(minutes) {
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const remainder = minutes % 60;
+  return [
+    days ? `${days} day${days === 1 ? "" : "s"}` : "",
+    hours ? `${hours} hour${hours === 1 ? "" : "s"}` : "",
+    remainder ? `${remainder} minute${remainder === 1 ? "" : "s"}` : "",
+  ].filter(Boolean).join(", ") || "0 minutes";
+}
+
+for (const picker of document.querySelectorAll("[data-duration-picker]")) {
+  const summary = picker.querySelector("[data-duration-summary]");
+  const update = () => {
+    const total =
+      Number(picker.querySelector("[name=duration_days]")?.value || 0) * 1440 +
+      Number(picker.querySelector("[name=duration_hours]")?.value || 0) * 60 +
+      Number(picker.querySelector("[name=duration_remainder_minutes]")?.value || 0);
+    if (summary) summary.textContent = `Selected: ${formatDuration(total)}.`;
+  };
+  picker.addEventListener("input", update);
+  update();
+}
+
+const timezoneField = document.querySelector("[data-timezone-field]");
+if (timezoneField instanceof HTMLInputElement && timezoneField.dataset.unconfigured === "true") {
+  const detected = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (detected) timezoneField.value = detected;
+}
+
+const genericTimezones = new Set([
+  "UTC",
+  "Etc/UTC",
+  "Etc/GMT",
+  "Etc/GMT+0",
+  "Etc/GMT-0",
+  "GMT",
+  "UCT",
+  "Universal",
+  "Zulu",
+]);
+function displayTimezone() {
+  const browser = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const server = document.documentElement.dataset.serverTimezone || "UTC";
+  return (!browser || genericTimezones.has(browser)) && !genericTimezones.has(server)
+    ? server
+    : undefined;
 }
 
 function renderRelativeTimes(root = document) {
@@ -156,6 +208,7 @@ function renderRelativeTimes(root = document) {
     time.title = new Intl.DateTimeFormat(undefined, {
       dateStyle: "full",
       timeStyle: "long",
+      timeZone: displayTimezone(),
     }).format(deadline);
   }
 }
@@ -168,27 +221,38 @@ function renderLocalDateTimes(root = document) {
     }
     const options =
       time.dataset.localDatetime === "date"
-        ? { dateStyle: "medium" }
-        : { dateStyle: "medium", timeStyle: "short" };
+        ? {
+            dateStyle: "medium",
+            timeZone:
+              time.dataset.dateOnly === "true"
+                ? document.documentElement.dataset.serverTimezone || "UTC"
+                : displayTimezone(),
+          }
+        : { dateStyle: "medium", timeStyle: "short", timeZone: displayTimezone() };
     time.textContent = new Intl.DateTimeFormat(undefined, options).format(instant);
     time.title = new Intl.DateTimeFormat(undefined, {
       dateStyle: "full",
       timeStyle: "long",
+      timeZone: displayTimezone(),
     }).format(instant);
   }
 }
 
-renderRelativeTimes();
-renderLocalDateTimes();
+function renderAllTimes() {
+  renderRelativeTimes(document);
+  renderLocalDateTimes(document);
+}
+
+renderAllTimes();
 document.addEventListener("htmx:beforeRequest", (event) => {
   const source = event.detail.elt;
   if (source instanceof HTMLFormElement) {
     source.closest("dialog")?.close();
   }
 });
+document.addEventListener("htmx:load", renderAllTimes);
 document.addEventListener("htmx:afterSwap", (event) => {
-  renderRelativeTimes(event.detail.target);
-  renderLocalDateTimes(event.detail.target);
+  renderAllTimes();
   if (event.detail.target.querySelector?.("[data-refresh-page]")) {
     window.setTimeout(() => window.location.reload(), 500);
   }

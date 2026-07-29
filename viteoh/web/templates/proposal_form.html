@@ -29,16 +29,19 @@
       </select>
       <small>Types are category tags for browsing; they do not change the proposal.</small>
     </label>
-    <label>Voting duration
-      <input type="number" name="duration_minutes" required
-        min="{{ baseline_minutes }}" max="{{ maximum_duration_minutes }}"
-        value="{{ baseline_minutes }}" inputmode="numeric" data-duration>
+    <fieldset class="duration-picker" data-duration-picker>
+      <legend>Voting duration</legend>
+      <div class="duration-fields">
+        <label>Days<input type="number" name="duration_days" min="0" max="7" required value="{{ duration_parts.days }}" inputmode="numeric"></label>
+        <label>Hours<input type="number" name="duration_hours" min="0" max="23" required value="{{ duration_parts.hours }}" inputmode="numeric"></label>
+        <label>Minutes<input type="number" name="duration_remainder_minutes" min="0" max="59" required value="{{ duration_parts.minutes }}" inputmode="numeric"></label>
+      </div>
       <small>
         The server minimum is {{ baseline_duration }}. You may extend this
         proposal up to {{ maximum_duration }}.
         <strong data-duration-summary>{{ baseline_duration }}</strong>
       </small>
-    </label>
+    </fieldset>
     <button class="primary" type="submit">{{ icon("plus", 18) }}Create proposal in Discord</button>
   </form>
   <aside class="preview-wrap">

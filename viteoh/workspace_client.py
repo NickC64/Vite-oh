@@ -89,6 +89,22 @@ class WorkspaceWorkerClient:
             if item.get("user_id")
         ]
 
+    async def proposal_capabilities(
+        self, guild_id: str, user_id: str, proposal_id: str
+    ) -> dict[str, bool]:
+        result = await self._post(
+            "/internal/workspace/proposal-capabilities",
+            {
+                "guild_id": guild_id,
+                "user_id": user_id,
+                "proposal_id": proposal_id,
+            },
+        )
+        return {
+            "can_withdraw": bool(result.get("can_withdraw")),
+            "can_repair": bool(result.get("can_repair")),
+        }
+
     async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         headers: dict[str, str] = {}
         if self.settings.google_cloud_project:

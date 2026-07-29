@@ -46,6 +46,14 @@ resource "google_secret_manager_secret" "workspace_signing_key" {
   depends_on = [google_project_service.apis]
 }
 
+resource "google_secret_manager_secret" "proposal_ownership_key" {
+  secret_id = "viteoh-proposal-ownership-key"
+  replication {
+    auto {}
+  }
+  depends_on = [google_project_service.apis]
+}
+
 resource "google_iam_workload_identity_pool" "github" {
   workload_identity_pool_id = "viteoh-github"
   display_name              = "Vite-oh GitHub Actions"

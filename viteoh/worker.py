@@ -1,11 +1,13 @@
 import hashlib
+import hmac
 import logging
 import secrets
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from viteoh.commands import HELP_TEXT, command_path_and_options
 from viteoh.components import link_button, modal_values, parse_component_id
@@ -26,7 +28,7 @@ from viteoh.tasks import TaskDispatcher
 from viteoh.workspace_security import SignedTokenCodec
 
 logger = logging.getLogger(__name__)
-CURRENT_RENDER_VERSION = 1
+CURRENT_RENDER_VERSION = 2
 
 ADMINISTRATOR = 1 << 3
 MANAGE_GUILD = 1 << 5
@@ -140,7 +142,12 @@ class InteractionProcessor:
             title = str(options.get("title", ""))
             context = str(options.get("context", "")).strip()
             return await self._new(
-                str(payload["id"]), title, context, proposal_type, config
+                str(payload["id"]),
+                title,
+                context,
+                proposal_type,
+                config,
+                user_id=user_id,
             )
         if path == ("proposal", "preferences"):
             new_value = options.get("new_proposals")
@@ -294,6 +301,7 @@ class InteractionProcessor:
             duration_minutes * 60,
             user_id,
             utcnow(),
+            timezone=current.timezone if current else "UTC",
         )
         return "Configuration saved.\n" + _format_config(config)
 
@@ -305,6 +313,7 @@ class InteractionProcessor:
         proposal_type: ProposalType | None,
         config: GuildConfig,
         duration_minutes: int | None = None,
+        user_id: str = "",
     ) -> str:
         title = " ".join(title.split())
         context = context.strip()
@@ -325,6 +334,8 @@ class InteractionProcessor:
             )
         now = utcnow()
         deadline = now + timedelta(minutes=selected_minutes)
+        ownership_salt = secrets.token_hex(16) if user_id else ""
+        ownership_proof = self._ownership_proof(ownership_salt, user_id)
         result = await self.repository.create_proposal(
             interaction_id,
             config.guild_id,
@@ -337,6 +348,8 @@ class InteractionProcessor:
             proposal_type.name if proposal_type else "",
             now,
             deadline,
+            ownership_salt=ownership_salt,
+            ownership_proof=ownership_proof,
         )
         if result.duplicate_name or not result.proposal:
             return f"An active proposal titled '{title}' already exists."
@@ -620,6 +633,36 @@ class InteractionProcessor:
         )
         return access
 
+    async def workspace_proposal_capabilities(
+        self, guild_id: str, user_id: str, proposal_id: str
+    ) -> dict[str, bool]:
+        access = await self.workspace_access(guild_id, user_id)
+        proposal = await self.repository.get_proposal(proposal_id)
+        visible = {str(item) for item in access.get("visible_channel_ids") or []}
+        if (
+            not proposal
+            or proposal.guild_id != guild_id
+            or proposal.output_channel_id not in visible
+        ):
+            raise PermissionError("That proposal is not available.")
+        ownership = await self.repository.get_proposal_ownership(proposal.id)
+        can_withdraw = (
+            proposal.source_kind == "automated"
+            and proposal.status is ProposalStatus.ACTIVE
+            and utcnow() < proposal.deadline_at
+            and ownership is not None
+            and hmac.compare_digest(
+                ownership[1],
+                self._ownership_proof(ownership[0], user_id),
+            )
+        )
+        can_repair = bool(
+            access.get("can_manage")
+            and proposal.source_kind == "automated"
+            and not proposal.message_intentionally_removed
+        )
+        return {"can_withdraw": can_withdraw, "can_repair": can_repair}
+
     async def workspace_guild_summaries(
         self, guild_ids: list[str], user_id: str
     ) -> dict[str, Any]:
@@ -782,6 +825,7 @@ class InteractionProcessor:
                 proposal_type,
                 config,
                 duration_minutes,
+                user_id,
             )
             proposal = await self.repository.get_proposal_for_interaction(
                 f"web:{job_id}"
@@ -797,7 +841,7 @@ class InteractionProcessor:
                 guild_id, user_id, bool(data.get("nudges"))
             )
             return "Your preferences were saved.", None
-        if action in {"acknowledge", "subscription", "nudge", "veto"}:
+        if action in {"acknowledge", "subscription", "nudge", "veto", "withdraw"}:
             proposal_id = str(data.get("proposal_id") or "")
             proposal = await self.repository.get_proposal(proposal_id)
             if not proposal or proposal.guild_id != guild_id:
@@ -811,7 +855,43 @@ class InteractionProcessor:
                     and retrying
                 ):
                     return "The proposal was vetoed anonymously.", proposal.id
+                if (
+                    action == "withdraw"
+                    and proposal.status is ProposalStatus.WITHDRAWN
+                    and retrying
+                ):
+                    await self.tasks.delete(proposal.deadline_task_name)
+                    if not proposal.effects_complete:
+                        await self.sync_terminal_effects(proposal)
+                    return "The proposal was withdrawn.", proposal.id
                 raise ValueError("This proposal is no longer active.")
+            if action == "withdraw":
+                ownership = await self.repository.get_proposal_ownership(proposal.id)
+                proof = (
+                    self._ownership_proof(ownership[0], user_id) if ownership else ""
+                )
+                result = await self.repository.withdraw_proposal(
+                    proposal.id,
+                    proof,
+                    utcnow(),
+                    bool(data.get("remove_message")),
+                )
+                if result.reason == "deadline_elapsed":
+                    raise ValueError(
+                        "The deadline has elapsed; this proposal cannot be withdrawn."
+                    )
+                if result.reason == "not_owner":
+                    raise PermissionError(
+                        "Only the anonymous proposer can withdraw this proposal."
+                    )
+                if not result.proposal or (
+                    not result.changed and result.reason != "already_withdrawn"
+                ):
+                    raise ValueError("This proposal is no longer active.")
+                await self.tasks.delete(result.proposal.deadline_task_name)
+                if not result.proposal.effects_complete:
+                    await self.sync_terminal_effects(result.proposal)
+                return "The proposal was withdrawn.", proposal.id
             if action == "acknowledge":
                 acknowledgement = await self.repository.acknowledge(
                     proposal.id, user_id, utcnow()
@@ -861,6 +941,13 @@ class InteractionProcessor:
         if action == "configure":
             channel_id = str(data.get("channel_id", ""))
             duration_minutes = int(data.get("duration_minutes", 0))
+            timezone_name = str(data.get("timezone") or "").strip()
+            try:
+                ZoneInfo(timezone_name)
+            except (ValueError, ZoneInfoNotFoundError) as exc:
+                raise ValueError(
+                    "Choose a valid IANA timezone, such as America/Toronto."
+                ) from exc
             if not (
                 MIN_PROPOSAL_DURATION_MINUTES
                 <= duration_minutes
@@ -886,8 +973,103 @@ class InteractionProcessor:
                 duration_minutes * 60,
                 user_id,
                 utcnow(),
+                timezone=timezone_name,
             )
             return "Server settings were saved.", None
+        if action == "repair":
+            proposal_id = str(data.get("proposal_id", ""))
+            proposal = await self.repository.get_proposal(proposal_id)
+            if not proposal or proposal.guild_id != guild_id:
+                raise ValueError("That proposal no longer exists.")
+            if proposal.output_channel_id not in visible_channels:
+                raise PermissionError("You cannot view that proposal's channel.")
+            if (
+                proposal.source_kind != "automated"
+                or proposal.message_intentionally_removed
+            ):
+                raise ValueError(
+                    "This proposal does not have a repairable Discord card."
+                )
+            await self.discord.validate_output_channel(
+                proposal.guild_id, proposal.output_channel_id
+            )
+            await self._sync_announcement(proposal.id)
+            return "The Discord proposal card was repaired.", proposal.id
+        if action == "history_import":
+            if not config:
+                raise ValueError("This server must be configured first.")
+            if not config.timezone_configured:
+                raise ValueError(
+                    "Save the server timezone before adding past decisions."
+                )
+            title = " ".join(str(data.get("title") or "").split())
+            normalized = normalize_title(title)
+            context = str(data.get("context") or "").strip()
+            if len(context) > 1000:
+                raise ValueError("Context cannot exceed 1,000 characters.")
+            status_value = str(data.get("status") or "")
+            if status_value not in {
+                ProposalStatus.PASSED.value,
+                ProposalStatus.VETOED.value,
+                ProposalStatus.WITHDRAWN.value,
+            }:
+                raise ValueError("Choose Passed, Vetoed, or Withdrawn.")
+            status = ProposalStatus(status_value)
+            veto_reason = str(data.get("veto_reason") or "").strip()
+            if len(veto_reason) > 500:
+                raise ValueError("A veto reason cannot exceed 500 characters.")
+            if status is not ProposalStatus.VETOED:
+                veto_reason = ""
+            source_url = str(data.get("source_url") or "").strip()
+            parsed_url = urlparse(source_url)
+            if source_url and (
+                parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc
+            ):
+                raise ValueError("Source URL must be a complete http or https URL.")
+            if len(source_url) > 2048:
+                raise ValueError("Source URL cannot exceed 2,048 characters.")
+            note = str(data.get("provenance_note") or "").strip()
+            if len(note) > 500:
+                raise ValueError("The provenance note cannot exceed 500 characters.")
+            type_id = str(data.get("type_id") or "")
+            proposal_type = (
+                await self.repository.get_type(guild_id, type_id) if type_id else None
+            )
+            if type_id and not proposal_type:
+                raise ValueError("That proposal type no longer exists.")
+            decision_at, date_only = _historical_instant(
+                str(data.get("decision_date") or ""),
+                str(data.get("decision_time") or ""),
+                config.timezone,
+            )
+            now = utcnow()
+            if decision_at > now:
+                raise ValueError("A past decision cannot be dated in the future.")
+            import_result = await self.repository.import_historical_proposal(
+                f"web:{job_id}",
+                guild_id,
+                config.guild_name,
+                config.output_channel_id,
+                title,
+                normalized,
+                context,
+                proposal_type.id if proposal_type else "",
+                proposal_type.name if proposal_type else "",
+                status,
+                decision_at,
+                date_only,
+                veto_reason,
+                source_url,
+                note,
+                user_id,
+                now,
+            )
+            if not import_result.proposal:
+                raise ValueError("The historical decision could not be added.")
+            return (
+                "The past decision was added to history.",
+                import_result.proposal.id,
+            )
         if action == "delete":
             proposal_id = str(data.get("proposal_id", ""))
             proposal = await self.repository.get_proposal(proposal_id)
@@ -1056,10 +1238,20 @@ class InteractionProcessor:
         return result
 
     async def sync_terminal_effects(self, proposal: Proposal) -> None:
-        if not proposal.announcement_synced or not proposal.outcome_message_id:
+        if proposal.status is ProposalStatus.WITHDRAWN:
+            if not proposal.announcement_synced:
+                if proposal.message_intentionally_removed:
+                    await self.discord.delete_proposal_announcement(proposal)
+                else:
+                    proposal = await self._sync_announcement(proposal.id) or proposal
+                await self.repository.mark_announcement_synced(proposal.id)
+        elif not proposal.announcement_synced or not proposal.outcome_message_id:
             proposal = await self._sync_announcement(proposal.id) or proposal
             await self.repository.mark_announcement_synced(proposal.id)
-        if not proposal.outcome_message_id:
+        if (
+            proposal.status is not ProposalStatus.WITHDRAWN
+            and not proposal.outcome_message_id
+        ):
             outcome_message_id = await self.discord.create_outcome_reply(proposal)
             proposal = (
                 await self.repository.set_outcome_message_id(
@@ -1072,6 +1264,7 @@ class InteractionProcessor:
         outcome = {
             ProposalStatus.PASSED: "passed",
             ProposalStatus.VETOED: "been vetoed",
+            ProposalStatus.WITHDRAWN: "been withdrawn",
             ProposalStatus.DELETED: "been deleted by an admin",
         }[proposal.status]
         text = (
@@ -1177,6 +1370,15 @@ class InteractionProcessor:
             return False
         return bool(permissions & (ADMINISTRATOR | MANAGE_GUILD))
 
+    def _ownership_proof(self, salt: str, user_id: str) -> str:
+        if not salt or not user_id or not self.settings.proposal_ownership_secret:
+            return ""
+        return hmac.new(
+            self.settings.proposal_ownership_secret.encode(),
+            f"{salt}\0{user_id}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+
 
 def _user_id(payload: dict[str, Any]) -> str:
     member = payload.get("member") or {}
@@ -1193,6 +1395,12 @@ def _format_config(config: GuildConfig) -> str:
 
 
 def _proposal_link(proposal: Proposal) -> str:
+    if (
+        not proposal.message_id
+        or proposal.source_kind == "manual"
+        or proposal.message_intentionally_removed
+    ):
+        return ""
     return (
         f"https://discord.com/channels/{proposal.guild_id}/"
         f"{proposal.output_channel_id}/{proposal.message_id}"
@@ -1207,10 +1415,49 @@ def _proposal_details(proposal: Proposal) -> str:
         if proposal.status is ProposalStatus.VETOED and proposal.veto_reason
         else ""
     )
-    return (
-        f"**{proposal.title}**{proposal_type}{context}{reason}\n"
-        f"Deadline: <t:{int(proposal.deadline_at.timestamp())}:F>"
+    return f"**{proposal.title}**{proposal_type}{context}{reason}\n" + (
+        f"Decision date: <t:{int(proposal.terminal_at.timestamp())}:F>"
+        if proposal.source_kind == "manual" and proposal.terminal_at
+        else f"Deadline: <t:{int(proposal.deadline_at.timestamp())}:F>"
     )
+
+
+def _historical_instant(
+    date_value: str, time_value: str, timezone_name: str
+) -> tuple[datetime, bool]:
+    try:
+        day = date.fromisoformat(date_value)
+    except ValueError as exc:
+        raise ValueError("Choose a valid historical date.") from exc
+    date_only = not time_value
+    try:
+        local_time = time(12, 0) if date_only else time.fromisoformat(time_value)
+    except ValueError as exc:
+        raise ValueError("Choose a valid historical time.") from exc
+    try:
+        zone = ZoneInfo(timezone_name)
+    except (ValueError, ZoneInfoNotFoundError) as exc:
+        raise ValueError(
+            "The server timezone is invalid. Save Server Settings first."
+        ) from exc
+    naive = datetime.combine(day, local_time)
+    candidates: list[datetime] = []
+    for fold in (0, 1):
+        candidate = naive.replace(tzinfo=zone, fold=fold)
+        round_trip = candidate.astimezone(UTC).astimezone(zone)
+        if round_trip.replace(tzinfo=None) == naive and round_trip.fold == fold:
+            candidates.append(candidate)
+    unique_offsets = {candidate.utcoffset() for candidate in candidates}
+    if not candidates:
+        raise ValueError(
+            "That local time does not exist because of daylight-saving time."
+        )
+    if len(unique_offsets) > 1:
+        raise ValueError(
+            "That local time is ambiguous because of daylight-saving time. "
+            "Choose another time or enter only the date."
+        )
+    return candidates[0].astimezone(UTC), date_only
 
 
 def _created_text(proposal: Proposal) -> str:

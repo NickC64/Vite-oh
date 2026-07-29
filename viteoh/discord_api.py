@@ -386,6 +386,7 @@ _COLORS = {
     ProposalStatus.ACTIVE: 0x5865F2,
     ProposalStatus.PASSED: 0x57F287,
     ProposalStatus.VETOED: 0xED4245,
+    ProposalStatus.WITHDRAWN: 0xF0B232,
     ProposalStatus.DELETED: 0x747F8D,
 }
 
@@ -397,6 +398,7 @@ def _proposal_embed(proposal: Proposal) -> dict[str, Any]:
         status = {
             ProposalStatus.PASSED: "Passed",
             ProposalStatus.VETOED: "Vetoed",
+            ProposalStatus.WITHDRAWN: "Withdrawn",
             ProposalStatus.DELETED: "Deleted by a moderator",
         }[proposal.status]
     count = proposal.acknowledgement_count
@@ -449,6 +451,7 @@ def _outcome_embed(proposal: Proposal) -> dict[str, Any]:
     title, description = {
         ProposalStatus.PASSED: ("Proposal passed", proposal.title),
         ProposalStatus.VETOED: ("Proposal vetoed", proposal.title),
+        ProposalStatus.WITHDRAWN: ("Proposal withdrawn", proposal.title),
         ProposalStatus.DELETED: (
             "Proposal deleted by a moderator",
             proposal.title,

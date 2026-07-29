@@ -1,6 +1,6 @@
 {% from "icons.html" import icon %}
 <!doctype html>
-<html lang="en">
+<html lang="en" data-server-timezone="{{ guild_timezone|default('UTC') }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -85,6 +85,9 @@
         </a>
         <a href="/app/archive?guild={{ guild_id }}" class="{% if active_page == 'archive' %}active{% endif %}" {% if active_page == "archive" %}aria-current="page"{% endif %}>
           {{ icon("archive") }}<span>History archive</span>
+        </a>
+        <a href="/app/history/new?guild={{ guild_id }}" class="{% if active_page == 'history_add' %}active{% endif %}" {% if active_page == "history_add" %}aria-current="page"{% endif %}>
+          {{ icon("plus") }}<span>Add past decision</span>
         </a>
         {% endif %}
       </nav>

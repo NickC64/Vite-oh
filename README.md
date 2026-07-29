@@ -66,6 +66,10 @@ individual proposal open longer, up to seven days, but cannot shorten the
 server baseline. The selected duration becomes the proposal's immutable
 absolute deadline.
 
+Durations are entered as days, hours, and minutes. Managers also choose an IANA
+timezone for server-side display fallbacks and historical local-time entry;
+ordinary pages still prefer the member's browser timezone.
+
 Active proposal messages provide **Veto**, **Acknowledge**, **Subscribe**,
 **Nudge**, and **Open workspace** buttons. Nudge opens an ephemeral Discord
 member picker. Terminal messages retain only **Open workspace**.
@@ -86,6 +90,12 @@ proposal removes its Firestore record and private activity subcollections, then
 best-effort removes its canonical and outcome messages from Discord. Active
 proposals must be resolved before they can be archived, and archived proposals
 can be restored to the main history.
+
+New proposals carry a private, per-proposal ownership proof. Their proposer can
+withdraw an active proposal without Vite-oh storing or displaying their Discord
+identity, optionally asking the bot to remove the Discord card. Managers can
+repair missing automated proposal cards and add workspace-only historical
+Passed, Vetoed, or Withdrawn decisions without creating Discord activity.
 
 The bot role needs **View Channel**, **Send Messages**, **Embed Links**, and
 **Read Message History** in the configured proposal channel. Private channels
@@ -122,7 +132,8 @@ SERVICE_ROLE=receiver uv run uvicorn viteoh.app:app --reload
 ```
 
 The web role also needs `WORKSPACE_URL`, `WORKER_URL`, and a long random
-`WORKSPACE_SIGNING_SECRET`. Set `SECURE_COOKIES=false` only for local HTTP.
+`WORKSPACE_SIGNING_SECRET`. The worker additionally needs an independent
+`PROPOSAL_OWNERSHIP_SECRET`. Set `SECURE_COOKIES=false` only for local HTTP.
 
 ## Google Cloud deployment
 
@@ -158,9 +169,10 @@ Push to `main`. CI builds an immutable commit-SHA image, applies only the
 application stack, deploys all three services, and runs the command-registration
 Cloud Run job.
 
-The bootstrap stack creates Secret Manager containers but no secret versions,
-ensuring the bot token and workspace signing key never enter source control,
-Terraform state, or GitHub.
+The bootstrap stack creates Secret Manager containers but no secret versions.
+Add versions for the bot token, workspace signing key, and the separate proposal
+ownership key before deployment so none enter source control, Terraform state,
+or GitHub.
 
 ## Discord cutover
 

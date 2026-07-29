@@ -78,6 +78,11 @@ class FakeWorkspaceWorker:
             {"user_id": "second", "display_name": "Second Member"},
         ]
 
+    async def proposal_capabilities(
+        self, guild_id: str, user_id: str, proposal_id: str
+    ) -> dict[str, bool]:
+        return {"can_withdraw": False, "can_repair": self.admin}
+
 
 def web_system(
     *, secure_cookies: bool = False
@@ -218,8 +223,9 @@ def test_proposal_duration_can_extend_but_not_shorten_server_baseline() -> None:
     with client:
         login(client)
         form = client.get("/app/proposals/new?guild=guild")
-        assert 'min="1"' in form.text
-        assert 'max="10080"' in form.text
+        assert 'name="duration_days"' in form.text
+        assert 'name="duration_hours"' in form.text
+        assert 'name="duration_remainder_minutes"' in form.text
         assert "You may extend this" in form.text
 
         token = csrf(client)
@@ -229,7 +235,9 @@ def test_proposal_duration_can_extend_but_not_shorten_server_baseline() -> None:
                 "csrf": token,
                 "guild_id": "guild",
                 "title": "Longer review",
-                "duration_minutes": "120",
+                "duration_days": "0",
+                "duration_hours": "2",
+                "duration_remainder_minutes": "0",
             },
             follow_redirects=False,
         )
@@ -242,11 +250,13 @@ def test_proposal_duration_can_extend_but_not_shorten_server_baseline() -> None:
                 "csrf": token,
                 "guild_id": "guild",
                 "title": "Too short",
-                "duration_minutes": "0",
+                "duration_days": "0",
+                "duration_hours": "0",
+                "duration_remainder_minutes": "0",
             },
         )
         assert too_short.status_code == 422
-        assert "cannot be shorter" in too_short.text
+        assert "between one minute and seven days" in too_short.text
 
         too_long = client.post(
             "/app/proposals",
@@ -254,11 +264,13 @@ def test_proposal_duration_can_extend_but_not_shorten_server_baseline() -> None:
                 "csrf": token,
                 "guild_id": "guild",
                 "title": "Too long",
-                "duration_minutes": "10081",
+                "duration_days": "7",
+                "duration_hours": "1",
+                "duration_remainder_minutes": "0",
             },
         )
         assert too_long.status_code == 422
-        assert "10,080" in too_long.text
+        assert "between one minute and seven days" in too_long.text
 
 
 def test_member_actions_enqueue_durable_jobs_and_search_conservatively() -> None:
@@ -412,7 +424,10 @@ def test_preferences_settings_types_jobs_and_security_headers() -> None:
                 "csrf": csrf(client),
                 "guild_id": "guild",
                 "channel_id": "channel",
-                "duration_minutes": "5",
+                "duration_days": "0",
+                "duration_hours": "0",
+                "duration_remainder_minutes": "5",
+                "timezone": "America/Toronto",
             },
         )
         assert tasks.workspace[-1]["action"] == "configure"
@@ -452,6 +467,28 @@ def test_preferences_settings_types_jobs_and_security_headers() -> None:
         )
         assert tasks.workspace[-1]["action"] == "type_delete"
 
+        repository.guilds["guild"] = replace(
+            repository.guilds["guild"],
+            timezone="America/Toronto",
+            timezone_configured=True,
+        )
+        history_form = client.get("/app/history/new?guild=guild")
+        assert history_form.status_code == 200
+        assert "This creates no Discord activity" in history_form.text
+        history_response = client.post(
+            "/app/history",
+            data={
+                "csrf": csrf(client),
+                "guild_id": "guild",
+                "title": "Old agreement",
+                "status": "passed",
+                "decision_date": "2020-01-01",
+            },
+            follow_redirects=False,
+        )
+        assert history_response.status_code == 303
+        assert tasks.workspace[-1]["action"] == "history_import"
+
         now = utcnow()
         asyncio.run(
             repository.set_workspace_job(
@@ -485,6 +522,7 @@ def test_preferences_settings_types_jobs_and_security_headers() -> None:
         assert "You no longer have access" in forbidden.text
         assert "Manage Server" in forbidden.text
 
+        worker.admin = True
         invalid = client.post(
             "/app/settings",
             data={
@@ -496,7 +534,7 @@ def test_preferences_settings_types_jobs_and_security_headers() -> None:
         )
         assert invalid.status_code == 422
         assert "Check the information you entered" in invalid.text
-        assert "duration minutes" in invalid.text
+        assert "valid voting duration" in invalid.text
 
 
 def test_created_proposal_job_renders_web_timestamp() -> None:
