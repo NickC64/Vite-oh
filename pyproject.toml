@@ -9,7 +9,7 @@ description = "A serverless anonymous-veto Discord bot"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 dependencies = [
-  "fastapi==0.139.2",
+  "fastapi==0.141.1",
   "google-cloud-firestore==2.28.0",
   "google-cloud-tasks==2.23.0",
   "httpx==0.28.1",
@@ -18,20 +18,20 @@ dependencies = [
   "pydantic-settings==2.14.2",
   "pynacl==1.6.2",
   "python-multipart==0.0.32",
-  "tzdata==2026.1",
-  "uvicorn[standard]==0.51.0",
+  "tzdata==2026.3",
+  "uvicorn[standard]==0.52.1",
 ]
 
 [dependency-groups]
 dev = [
   "mypy==2.3.0",
   "pip-audit==2.10.1",
-  "playwright==1.61.0",
+  "playwright==1.62.0",
   "pytest==9.1.1",
   "pytest-asyncio==1.4.0",
-  "pytest-cov==7.0.0",
-  "respx==0.22.0",
-  "ruff==0.15.22",
+  "pytest-cov==7.1.0",
+  "respx==0.23.1",
+  "ruff==0.16.1",
 ]
 
 [tool.hatch.build.targets.wheel]
