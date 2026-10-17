@@ -1,11 +1,12 @@
 FROM ghcr.io/astral-sh/uv:0.11.28 AS uv
 
-FROM python:3.13.13-slim AS runtime
+FROM python:3.13.16-slim AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
     PATH="/app/.venv/bin:$PATH"
 
 RUN addgroup --system app && adduser --system --ingroup app app
