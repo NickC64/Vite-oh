@@ -11,15 +11,25 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+    groups:
+      containers:
+        patterns: ["*"]
+    ignore:
+      # Keep the image aligned with requires-python and CI until an intentional
+      # interpreter upgrade. Security/patch updates within 3.13 remain enabled.
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
   - package-ecosystem: terraform
-    directory: /infra/bootstrap
+    directories: ["/infra/bootstrap", "/infra/application"]
     schedule:
       interval: weekly
-  - package-ecosystem: terraform
-    directory: /infra/application
-    schedule:
-      interval: weekly
+    groups:
+      terraform:
+        patterns: ["*"]
